@@ -1,0 +1,22 @@
+# testing add verbose options
+-v 0,1,2 
+
+# create venv
+python -m venv --system-site-packages python_venv
+
+# this is for getting the values of the gains and exposures 
+
+rpicam-hello --timeout 0 --info-text "red gain %rg, blue gain %bg, analog gain %ag, digital gain %dg, exposure %exp"
+
+# this is to list out all the formats for all cameras
+
+libcamera-hello --list-cameras
+
+# stream a camera with specific  settings
+
+rpicam-hello --gain 5 --awbgains 2.45,1.95 --width 2028 --height 1520 --sharpness 0 --contrast 1 --brightness 0 --saturation 1 ev 0 --timeout 0
+
+# take an image with jpg and raw
+
+rpicam-still --gain 5 --awbgains 2.45,1.95 --immediate -q 100 --width 4056 --height 3040 -n --sharpness 0 --contrast 1 --brightness 0 --saturation 1 ev 0 --raw --output test.jpg 
+rpicam-still --gain 2 --awbgains 2.45,1.95 --immediate -q 100 --width 2028 --height 1520 -n --sharpness 0 --contrast 1 --brightness 0 --saturation 1 ev 0 --raw -v 0 --thumb 360:240:100 --output test.jpg 
