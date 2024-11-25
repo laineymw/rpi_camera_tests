@@ -114,7 +114,7 @@ metadata.update(main_camera_stream_config)
 metadata["ISO"] = round(100*metadata["AnalogueGain"])
 export_images(arrays,capture_config,metadata,output_path)
 
-wait_time = 20
+wait_time = 5
 print("waiting for", wait_time, '(s)')
 time.sleep(wait_time)
 
