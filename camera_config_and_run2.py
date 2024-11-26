@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-import os, time
+import os, time, subprocess
 import glob
 import json
 import piexif
@@ -86,15 +86,19 @@ def s(tmp):
     plt.imshow(tmp)
     plt.show(block = True)
 
+monitor_size = subprocess.Popen('xrandr | grep "\*" | cut -d" " -f4', shell = True, stdout = subprocess.PIPE).communicate()[0]
+if monitor_size:
+    monitor_size = monitor_size.decode('UTF-8')
+    monitor_size = monitor_size.split('x')
+    monitor_size[1] = monitor_size[1][:-1]
+    monitor_size[0], monitor_size[1] = int(monitor_size[0]), int(monitor_size[1])
+
 output_path = os.path.join(os.path.dirname(os.path.realpath(__name__)),'images')
 os.makedirs(output_path,exist_ok=True)
 
 use_preview = True
 
 picam2 = Picamera2()
-
-if use_preview:
-    picam2.start_preview(Preview.QTGL,x=1280,y=1, width = 640, height = 480)
 
 # not using raw formats as they are still not fully documented
 capture_config = picam2.create_still_configuration(
@@ -111,6 +115,15 @@ preview_config = picam2.create_preview_configuration(
     display = "lores"
 )
 picam2.configure(preview_config)
+
+if use_preview:
+    if monitor_size:
+        picam2.start_preview(Preview.QTGL,x=monitor_size[0]-preview_config['lores']['size'][0]
+                             ,y=1, width = preview_config['lores']['size'][0],
+                               height = preview_config['lores']['size'][1])
+    else:
+        picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
+
 main_camera_stream_config = capture_config['main']
 
 # open the default image metadata and read in the settings as a sorted dict
