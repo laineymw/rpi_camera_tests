@@ -126,6 +126,10 @@ for key in default_image_settings:
     except:
         print('FAIL to set camera setting')
         print(key,default_image_settings[key])
+
+exp_time = 1/10
+exp_time_us = int(round(exp_time * 1000000))
+picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
         
 picam2.start()
 time.sleep(0.1)
@@ -143,15 +147,17 @@ camera_metadata = main_camera_stream_config
 metadata["ISO"] = round(100*metadata["AnalogueGain"])
 export_images(arrays,capture_config,metadata,camera_metadata,output_path)
 
-wait_time = 10000
-print("waiting for", wait_time, '(s)')
-time.sleep(wait_time)
 
-print('capturing data')
-arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
-camera_metadata = main_camera_stream_config
-metadata["ISO"] = round(100*metadata["AnalogueGain"])
-export_images(arrays,capture_config,metadata,camera_metadata,output_path,name_append="2")
+while True:
+    wait_time = 30
+    print("waiting for", wait_time, '(s)')
+    time.sleep(wait_time)
+
+    print('capturing data')
+    arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
+    camera_metadata = main_camera_stream_config
+    metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    export_images(arrays,capture_config,metadata,camera_metadata,output_path,name_append="2")
 
 print('EOF')
 
