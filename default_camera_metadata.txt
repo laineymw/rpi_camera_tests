@@ -1,0 +1,1 @@
+{"format": "RGB888", "size": [4056, 3040], "stride": 12224, "framesize": 37160960}

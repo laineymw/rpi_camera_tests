@@ -48,7 +48,7 @@ def save_image_with_metadata(array, filepath, metadata=None, capture_config=None
     else:
         raise ValueError("Unsupported format. Use 'PNG' or 'JPEG'.")
 
-def export_images(arrays, capture_config, metadata, output_path):
+def export_images(arrays, capture_config, image_metadata, camera_metadata, output_path):
     print("exporting")
     
     # Clean the output folder
@@ -57,15 +57,18 @@ def export_images(arrays, capture_config, metadata, output_path):
         os.remove(f)
 
     # Save metadata
-    with open(os.path.join(output_path, "metadata.txt"), "w") as fp:
-        json.dump(metadata, fp)
+    with open(os.path.join(output_path, "image_metadata.txt"), "w") as fp:
+        json.dump(image_metadata, fp)
+        # Save metadata
+    with open(os.path.join(output_path, "camera_metadata.txt"), "w") as fp:
+        json.dump(camera_metadata, fp)
 
 #  (arrays[0], os.path.join(output_path, "image.png"), metadata, [capture_config, "main"], "PNG"),
 
     # Define image-saving tasks
     tasks = [
-        (arrays[0], os.path.join(output_path, "image.jpg"), metadata, [capture_config, "main"], "JPG", 95),
-        (arrays[1], os.path.join(output_path, "lores.jpg"), metadata, [capture_config, "lores"], "JPG", 95),
+        (arrays[0], os.path.join(output_path, "image.jpg"), image_metadata, [capture_config, "main"], "JPG", 95),
+        (arrays[1], os.path.join(output_path, "lores.jpg"), image_metadata, [capture_config, "lores"], "JPG", 95),
     ]
 
     # Use ThreadPoolExecutor for parallel saving
@@ -85,7 +88,7 @@ picam2 = Picamera2()
 # print("Sensor modes")
 # pprint(picam2.sensor_modes)
 # pprint(picam2.sensor_format) 
-picam2.start_preview(Preview.QTGL)
+picam2.start_preview(Preview.QTGL,x=1280,y=1, width = 640, height = 480)
 
 # not using raw formats as they are still not fully documented
 capture_config = picam2.create_still_configuration(
@@ -107,12 +110,14 @@ main_camera_stream_config = capture_config['main']
 
 picam2.start()
 time.sleep(0.5)
+picam2.title_fields = ["ColourTemperature","ColourGains"] # v"ExposureTime","AnalogueGain","DigitalGain",
+time.sleep(0.5)
 
 print('capturing data')
 arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
-metadata.update(main_camera_stream_config)
+camera_metadata = main_camera_stream_config
 metadata["ISO"] = round(100*metadata["AnalogueGain"])
-export_images(arrays,capture_config,metadata,output_path)
+export_images(arrays,capture_config,metadata,camera_metadata,output_path)
 
 wait_time = 5
 print("waiting for", wait_time, '(s)')
@@ -120,9 +125,9 @@ time.sleep(wait_time)
 
 print('capturing data')
 arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
-metadata.update(main_camera_stream_config)
+camera_metadata = main_camera_stream_config
 metadata["ISO"] = round(100*metadata["AnalogueGain"])
-export_images(arrays,capture_config,metadata,output_path)
+export_images(arrays,capture_config,metadata,camera_metadata,output_path)
 
 print('EOF')
 
