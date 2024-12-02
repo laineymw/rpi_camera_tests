@@ -63,7 +63,7 @@ def export_images(arrays, capture_config, image_metadata, camera_metadata, outpu
 
     # Define image-saving tasks
     tasks = [
-        (arrays[0], os.path.join(output_path, "image" + name_append + ".png"), image_metadata, [capture_config, "main"], "PNG"),#"JPG", 95),
+        (arrays[0], os.path.join(output_path, "image" + name_append + ".jpg"), image_metadata, [capture_config, "main"],"JPG", 95),
         (arrays[1], os.path.join(output_path, "lores" + name_append + ".jpg"), image_metadata, [capture_config, "lores"], "JPG", 95),
     ]
 
@@ -102,15 +102,15 @@ picam2 = Picamera2()
 
 # not using raw formats as they are still not fully documented
 capture_config = picam2.create_still_configuration(
-    main= {"format": "RGB888", "size": (4056,3040)},    # for outputs
+    main= {"format": "RGB888", "size": (2028,1520)},    # for outputs
     lores = {"format": "XBGR8888","size":(640,480)},    # for display
     # raw={'format': 'SRGGB12', "size": (4056,3040)},
     display = "lores",
     buffer_count=1)
 # picam2.configure(capture_config)
 preview_config = picam2.create_preview_configuration(
-    main= {"format": "RGB888", "size": (4056,3040)},
-    lores = {"format": "XBGR8888","size":(640,480)}, 
+    main= {"format": "RGB888", "size": (2028,1520)},
+    lores = {"format": "XBGR8888","size":(2*640,2*480)}, 
     # raw={"format": "SRGGB12", "size": (4056,3040)},
     display = "lores"
 )
@@ -140,14 +140,14 @@ for key in default_image_settings:
         print('FAIL to set camera setting')
         print(key,default_image_settings[key])
 
-exp_time = 1/10
+exp_time = 1/30
 exp_time_us = int(round(exp_time * 1000000))
 picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
         
 picam2.start()
-time.sleep(0.1)
+time.sleep(0.5)
 picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
-time.sleep(0.1)
+time.sleep(0.5)
 
 # Clean the output folder
 files = glob.glob(os.path.join(output_path, "*"))
@@ -162,15 +162,15 @@ export_images(arrays,capture_config,metadata,camera_metadata,output_path)
 
 
 while True:
-    wait_time = 30
+    wait_time = 5
     print("waiting for", wait_time, '(s)')
     time.sleep(wait_time)
 
-    print('capturing data')
-    arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
-    camera_metadata = main_camera_stream_config
-    metadata["ISO"] = round(100*metadata["AnalogueGain"])
-    export_images(arrays,capture_config,metadata,camera_metadata,output_path,name_append="2")
+    # print('capturing data')
+    # arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
+    # camera_metadata = main_camera_stream_config
+    # metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    # export_images(arrays,capture_config,metadata,camera_metadata,output_path,name_append="2")
 
 print('EOF')
 
