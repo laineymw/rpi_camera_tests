@@ -76,6 +76,23 @@ def export_images(arrays, capture_config, image_metadata, camera_metadata, outpu
 
     print("done exporting")
 
+def process_raw(input_array):
+
+    input_array = input_array.view(np.uint16)
+
+    input_shape = input_array.shape
+
+    blue_pixels = input_array[0::2,0::2]
+    red_pixels = input_array[1::2,1::2]
+    green1_pixels = input_array[0::2,1::2]
+    green2_pixels = input_array[1::2,0::2]
+
+    avg_green = (green1_pixels+green2_pixels)/2
+
+    out = np.stack((red_pixels,avg_green,blue_pixels), axis=-1).astype(np.uint16)
+
+    return out
+
 def sort_dict(d):
     d_keys = list(d.keys())
     d_keys.sort()
@@ -103,31 +120,23 @@ use_preview = True
 
 picam2 = Picamera2()
 
-# not using raw formats as they are still not fully documented
-capture_config = picam2.create_still_configuration(
-    main= {"format": "RGB888", "size": (4056,3040)},    # for outputs
-    lores = {"format": "XBGR8888","size":(640,480)},    # for display
-    # raw={'format': 'SRGGB12', "size": (4056,3040)},
-    display = "lores")#,
-    # buffer_count=1)
-# picam2.configure(capture_config)
-preview_config = picam2.create_preview_configuration(
+cam_config = picam2.create_preview_configuration(
     main= {"format": "RGB888", "size": (4056,3040)},
     lores = {"format": "XBGR8888","size":(640,480)}, 
-    # raw={"format": "SRGGB12", "size": (4056,3040)},
+    raw={"format": "SRGGB12", "size": (4056,3040)},
     display = "lores"
 )
-picam2.configure(preview_config)
+picam2.configure(cam_config)
 
 if use_preview:
     if monitor_size:
-        picam2.start_preview(Preview.QTGL,x=monitor_size[0]-preview_config['lores']['size'][0]
-                             ,y=1, width = preview_config['lores']['size'][0],
-                               height = preview_config['lores']['size'][1])
+        picam2.start_preview(Preview.QTGL,x=monitor_size[0]-cam_config['lores']['size'][0]
+                             ,y=1, width = cam_config['lores']['size'][0],
+                               height = cam_config['lores']['size'][1])
     else:
         picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
 
-main_camera_stream_config = capture_config['main']
+main_camera_stream_config = cam_config['main']
 
 # open the default image metadata and read in the settings as a sorted dict
 with open("camera_settings.txt") as f:
@@ -158,20 +167,21 @@ for f in files:
     os.remove(f)
 
 print('capturing data')
-arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
+arrays, metadata = picam2.capture_arrays(["main","lores"])
 camera_metadata = main_camera_stream_config
 metadata["ISO"] = round(100*metadata["AnalogueGain"])
-export_images(arrays,capture_config,metadata,camera_metadata,output_path)
+# export_images(arrays,cam_config,metadata,camera_metadata,output_path)
 
 
 while True:
 
     print('capturing data')
 
-    # arrays, metadata = picam2.switch_mode_and_capture_arrays(capture_config, ["main","lores"])
-    # camera_metadata = main_camera_stream_config
-    # metadata["ISO"] = round(100*metadata["AnalogueGain"])
-    # export_images(arrays,capture_config,metadata,camera_metadata,output_path,name_append="2")
+    arrays, metadata = picam2.capture_arrays(["main","lores","raw"]) #'raw'
+    camera_metadata = main_camera_stream_config
+    metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    temp_raw = process_raw(arrays[2])
+    # export_images(arrays,cam_config,metadata,camera_metadata,output_path,name_append="2")
 
     wait_time = 5
     print("waiting for", wait_time, '(s)')
