@@ -3,11 +3,11 @@ import os, time, datetime, subprocess
 import glob
 import json
 import piexif
-from PIL import Image, PngImagePlugin
+# from PIL import Image, PngImagePlugin
 import numpy as np
 from picamera2 import Picamera2, Preview
-from pprint import pprint
-import matplotlib.pyplot as plt
+# from pprint import pprint
+# import matplotlib.pyplot as plt
 
 def save_image_with_metadata(array, filepath, metadata=None, capture_config=None, format="PNG", quality=95):
     if isinstance(array, np.ndarray):
@@ -76,11 +76,11 @@ def export_images(arrays, capture_config, image_metadata, camera_metadata, outpu
 
     print("done exporting")
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True):
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
 
-    if R or G or B or G1 or G2:
+    if R or G or B or G1 or G2 or RGB2:
         RGB = False
 
     if RGB:
@@ -89,11 +89,9 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        # avg_green = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
+        avg_green = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
 
-        a = np.concatenate((blue_pixels,green1_pixels),axis = 0)
-        b = np.concatenate((green2_pixels,red_pixels), axis = 0)
-        out = np.concatenate((a,b),axis = 1)
+        out = np.stack((red_pixels,avg_green,blue_pixels),axis = -1)
     if R:
         out = input_array[1::2,1::2]
     if G:
@@ -107,6 +105,15 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         out = input_array[1::2,0::2]
     if B:
         out = input_array[0::2,0::2]
+    if RGB2:
+        blue_pixels = input_array[0::2,0::2]
+        red_pixels = input_array[1::2,1::2]
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        a = np.concatenate((blue_pixels,green1_pixels),axis = 0)
+        b = np.concatenate((green2_pixels,red_pixels), axis = 0)
+        out = np.concatenate((a,b),axis = 1)
 
     return out
 
@@ -116,7 +123,7 @@ def sort_dict(d):
     d = {i: d[i] for i in d_keys}
     return d
 
-def s(tmp, bgr=False,f=True):
+def s(tmp, bgr=False,f=False):
     if f:#(fig is not None) and (ax is not None):
         global fig, ax
         ax.clear()  # Clear only the axes instead of recreating the figure
@@ -153,7 +160,7 @@ if __name__ == "__main__":
     cam_config = picam2.create_preview_configuration(
         main= {"format": "RGB888", "size": (2028,1520)},
         lores = {"format": "XBGR8888","size":(640,480)}, 
-        # raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},
+        raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},
         display = "lores",buffer_count=1
     )
     picam2.configure(cam_config)
@@ -182,11 +189,11 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/20
+    exp_time = 1/30
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 26.0
+    AnalogueGain = 8.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
             
     picam2.start()
@@ -212,16 +219,18 @@ if __name__ == "__main__":
     start_time = time.time()
     frame_count = 0
     fps_update_interval = 5  # Seconds
+    loop_counter = 0
+    loop_counter_max = 100
 
     while True:
 
         # print('capturing data')
 
-        arrays, metadata = picam2.capture_arrays(["main","lores","raw"]) #'raw'
+        arrays, metadata = picam2.capture_arrays(["raw"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # arrays[2] = arrays[2].view(np.uint16)
-        # temp_raw = process_raw(arrays[2], G1 = True)
+        temp_raw = process_raw(arrays[0], G1 = True)
 
         # # export_images(arrays,cam_config,metadata,camera_metadata,output_path,name_append="2")
         # print('loop', datetime.datetime.now().strftime("%H:%M:%S.%f"))
@@ -233,11 +242,14 @@ if __name__ == "__main__":
         elapsed_time = time.time() - start_time
         if elapsed_time >= fps_update_interval:
             fps = frame_count / elapsed_time
-            print(f"FPS: {fps:.2f}")
+            print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
             start_time = time.time()
             frame_count = 0
 
             print('Loop', datetime.datetime.now().strftime("%H:%M:%S.%f"))
+            loop_counter += 1
+            if loop_counter >= loop_counter_max:
+                break
 
 
     print('EOF')
