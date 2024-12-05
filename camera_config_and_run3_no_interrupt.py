@@ -3,38 +3,46 @@ import os, time, datetime, subprocess
 import glob
 import json
 import piexif
-# from PIL import Image, PngImagePlugin
+from PIL import Image, PngImagePlugin
 import numpy as np
 from picamera2 import Picamera2, Preview
 # from pprint import pprint
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 
 def save_image_with_metadata(array, filepath, metadata=None, capture_config=None, format="PNG", quality=95):
+    mono = False
+    from cv2 import imwrite
+
     if isinstance(array, np.ndarray):
         if array.ndim == 3 and array.shape[2] > 3:
             array = array[:, :, 0:3]
 
     if not isinstance(array, np.ndarray) or array.ndim != 3 or array.shape[2] != 3:
-        raise ValueError("Input must be an M, N, 3 NumPy array in RGB format.")
+        if array.ndim == 2:
+            mono = True
+        else:
+            raise ValueError("Input must be an M, N, 3 NumPy array in RGB or MONO format.")
 
     # Try to convert to BGR
-    try:
-        color_format = capture_config[0][capture_config[1]]['format']
-        if 'RGB' in color_format.upper():
-            array = array[:, :, ::-1]
-    except Exception:
-        pass  # Colorspace detection failed
+    if not mono:
+        try:
+            # we default to saving bgr because python
+            color_format = capture_config[0][capture_config[1]]['format']
+            if ('RGB' in color_format.upper()) or ('BGGR' in color_format.upper()):
+                array = array[:, :, ::-1]
+        except Exception:
+            pass  # Colorspace detection failed
 
-    # Convert the array to a PIL Image
-    image = Image.fromarray(array, 'RGB')
+    if (format.upper() == "PNG") or (format.upper() in {"TIF","TIFF"}):
+         # Save the image without EXIF metadata
+        imwrite(filepath,array)
 
-    if format.upper() == "PNG":
-        info = PngImagePlugin.PngInfo()
-        if metadata:
-            for key, value in metadata.items():
-                info.add_text(key, str(value))
-        image.save(filepath, format="PNG", pnginfo=info)
-    elif format.upper() in {"JPEG", "JPG"}:
+    elif format.upper() in {"JPEG", "JPG"}: # this specific metadata scheme only jpg works
+        if not mono:     # Convert the array to a PIL Image
+            image = Image.fromarray(array, 'RGB')
+        else:
+            image = Image.fromarray(array)#,'L')
+
         if metadata:
             exif_dict = {"Exif": {}, "0th": {}, "1st": {}}
             exif_dict["Exif"][piexif.ExifIFD.ExposureTime] = (metadata.get("ExposureTime", 1), 1)
@@ -46,8 +54,9 @@ def save_image_with_metadata(array, filepath, metadata=None, capture_config=None
 
         # Save the image with EXIF metadata
         image.save(filepath, format="JPEG", exif=exif_bytes, quality=quality)
+
     else:
-        raise ValueError("Unsupported format. Use 'PNG' or 'JPEG'.")
+        raise ValueError("Unsupported format. Use 'PNG','JPG', or 'TIF'.")
 
 def export_images(arrays, capture_config, image_metadata, camera_metadata, output_path,name_append = ""):
     print("exporting")
@@ -63,7 +72,7 @@ def export_images(arrays, capture_config, image_metadata, camera_metadata, outpu
 
     # Define image-saving tasks
     tasks = [
-        (arrays[0], os.path.join(output_path, "image" + name_append + ".jpg"), image_metadata, [capture_config, "main"],"JPG", 95),
+        (arrays[0], os.path.join(output_path, "raw" + name_append + ".tif"), image_metadata, [capture_config, "raw"],"TIF"),#, 95),
         (arrays[1], os.path.join(output_path, "lores" + name_append + ".jpg"), image_metadata, [capture_config, "lores"], "JPG", 95),
     ]
 
@@ -111,8 +120,8 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        a = np.concatenate((blue_pixels,green1_pixels),axis = 0)
-        b = np.concatenate((green2_pixels,red_pixels), axis = 0)
+        a = np.concatenate((red_pixels,green1_pixels),axis = 0)
+        b = np.concatenate((green2_pixels,blue_pixels ), axis = 0)
         out = np.concatenate((a,b),axis = 1)
 
     return out
@@ -158,9 +167,9 @@ if __name__ == "__main__":
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
-        main= {"format": "RGB888", "size": (2028,1520)},
+        # main= {"format": "RGB888", "size": (2028,1520)},
         lores = {"format": "XBGR8888","size":(640,480)}, 
-        raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},
+        raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520)
         display = "lores",buffer_count=1
     )
     picam2.configure(cam_config)
@@ -207,7 +216,7 @@ if __name__ == "__main__":
         os.remove(f)
 
     print('capturing data')
-    arrays, metadata = picam2.capture_arrays(["main","lores"])
+    arrays, metadata = picam2.capture_arrays(["lores"])
     camera_metadata = main_camera_stream_config
     metadata["ISO"] = round(100*metadata["AnalogueGain"])
     # export_images(arrays,cam_config,metadata,camera_metadata,output_path)
@@ -224,16 +233,11 @@ if __name__ == "__main__":
 
     while True:
 
-        # print('capturing data')
-
-        arrays, metadata = picam2.capture_arrays(["raw"]) #"main","lores","raw"
+        arrays, metadata = picam2.capture_arrays(["raw","lores"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # arrays[2] = arrays[2].view(np.uint16)
-        temp_raw = process_raw(arrays[0], G1 = True)
-
-        # # export_images(arrays,cam_config,metadata,camera_metadata,output_path,name_append="2")
-        # print('loop', datetime.datetime.now().strftime("%H:%M:%S.%f"))
+        arrays[0] = process_raw(arrays[0], RGB2 = True)
 
         # Increment frame count
         frame_count += 1
@@ -241,6 +245,9 @@ if __name__ == "__main__":
         # Calculate and print FPS every 5 seconds
         elapsed_time = time.time() - start_time
         if elapsed_time >= fps_update_interval:
+
+            export_images(arrays,cam_config,metadata,camera_metadata,output_path,name_append="2")
+
             fps = frame_count / elapsed_time
             print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
             start_time = time.time()
