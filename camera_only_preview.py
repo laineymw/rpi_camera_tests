@@ -3,87 +3,12 @@ import os, time, datetime, subprocess
 import glob
 import json
 import piexif
-from PIL import Image, PngImagePlugin
+from PIL import Image
 import numpy as np
 from picamera2 import Picamera2, Preview
 # from pprint import pprint
 import matplotlib.pyplot as plt
-
-def save_image_with_metadata(array, filepath, metadata=None, capture_config=None, format="PNG", quality=95):
-    mono = False
-    from cv2 import imwrite
-
-    if isinstance(array, np.ndarray):
-        if array.ndim == 3 and array.shape[2] > 3:
-            array = array[:, :, 0:3]
-
-    if not isinstance(array, np.ndarray) or array.ndim != 3 or array.shape[2] != 3:
-        if array.ndim == 2:
-            mono = True
-        else:
-            raise ValueError("Input must be an M, N, 3 NumPy array in RGB or MONO format.")
-
-    # Try to convert to BGR
-    if not mono:
-        try:
-            # we default to saving bgr because python
-            color_format = capture_config[0][capture_config[1]]['format']
-            if ('RGB' in color_format.upper()) or ('BGGR' in color_format.upper()):
-                array = array[:, :, ::-1]
-        except Exception:
-            pass  # Colorspace detection failed
-
-    if (format.upper() == "PNG") or (format.upper() in {"TIF","TIFF"}):
-         # Save the image without EXIF metadata
-        imwrite(filepath,array)
-
-    elif format.upper() in {"JPEG", "JPG"}: # this specific metadata scheme only jpg works
-        if not mono:     # Convert the array to a PIL Image
-            image = Image.fromarray(array, 'RGB')
-        else:
-            image = Image.fromarray(array)#,'L')
-
-        if metadata:
-            exif_dict = {"Exif": {}, "0th": {}, "1st": {}}
-            exif_dict["Exif"][piexif.ExifIFD.ExposureTime] = (metadata.get("ExposureTime", 1), 1)
-            exif_dict["Exif"][piexif.ExifIFD.ISOSpeedRatings] = metadata.get("ISO", 100)
-            exif_dict["Exif"][piexif.ExifIFD.ImageUniqueID] = str(metadata.get("SensorTimestamp", ""))
-            exif_bytes = piexif.dump(exif_dict)
-        else:
-            exif_bytes = None
-
-        # Save the image with EXIF metadata
-        image.save(filepath, format="JPEG", exif=exif_bytes, quality=quality)
-
-    else:
-        raise ValueError("Unsupported format. Use 'PNG','JPG', or 'TIF'.")
-
-def export_images(arrays, capture_config, image_metadata, camera_metadata, output_path,name_append = ""):
-    print("exporting")
-
-    # Save metadata
-    with open(os.path.join(output_path, "image_metadata" + name_append + ".txt"), "w") as fp:
-        json.dump(image_metadata, fp)
-        # Save metadata
-    with open(os.path.join(output_path, "camera_metadata" + name_append + ".txt"), "w") as fp:
-        json.dump(camera_metadata, fp)
-
-#  (arrays[0], os.path.join(output_path, "image.png"), metadata, [capture_config, "main"], "PNG"),
-
-    # Define image-saving tasks
-    tasks = [
-        (arrays[0], os.path.join(output_path, "raw" + name_append + ".tif"), image_metadata, [capture_config, "raw"],"TIF"),#, 95),
-        (arrays[1], os.path.join(output_path, "lores" + name_append + ".jpg"), image_metadata, [capture_config, "lores"], "JPG", 95),
-    ]
-
-    # Use ThreadPoolExecutor for parallel saving
-    def save_task(args):
-        save_image_with_metadata(*args)
-
-    with ThreadPoolExecutor() as executor:
-        executor.map(save_task, tasks)
-
-    print("done exporting")
+import cv2
 
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False):
     if 'uint16' not in str(input_array.dtype):
@@ -163,27 +88,39 @@ if __name__ == "__main__":
     os.makedirs(output_path,exist_ok=True)
 
     use_preview = True
+    use_default_preview_size = True
 
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
         main= {"format": "RGB888", "size": (2028,1520)},
-        lores = {"format": "XBGR8888","size":(2*640,2*480)}, 
+        lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
         raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
         display = "lores",buffer_count=1
     )
     picam2.configure(cam_config)
 
     if use_preview:
-        viewer_multiplier = 1
-        if monitor_size:
-            picam2.start_preview(Preview.QTGL,
-                x=monitor_size[0]-(viewer_multiplier*cam_config['lores']['size'][0]),
-                y=1, 
-                width = viewer_multiplier*cam_config['lores']['size'][0],
-                height = viewer_multiplier*cam_config['lores']['size'][1])
+        if use_default_preview_size:
+            image_WH = [600,450]
+            if monitor_size:
+                picam2.start_preview(Preview.QTGL,
+                    x=monitor_size[0]-int(image_WH[0]),
+                    y=1, 
+                    width = int(image_WH[0]),
+                    height = int(image_WH[1]))
+            else:
+                picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
         else:
-            picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
+            viewer_multiplier = 2.5
+            if monitor_size:
+                picam2.start_preview(Preview.QTGL,
+                    x=monitor_size[0]-int(viewer_multiplier*cam_config['lores']['size'][0]),
+                    y=1, 
+                    width = int(viewer_multiplier*cam_config['lores']['size'][0]),
+                    height = int(viewer_multiplier*cam_config['lores']['size'][1]))
+            else:
+                picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
 
     main_camera_stream_config = cam_config['main']
 
@@ -197,6 +134,7 @@ if __name__ == "__main__":
     for key in default_image_settings:
         try:
             picam2.set_controls({key:default_image_settings[key]})
+            print(key,default_image_settings[key])
         except:
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
@@ -205,11 +143,12 @@ if __name__ == "__main__":
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 10.0
+    AnalogueGain = 128.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
     ColourGains = [1.25, 1.35]
     picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
+
             
     picam2.start()
     time.sleep(0.5)
@@ -233,17 +172,40 @@ if __name__ == "__main__":
     # Variables for FPS calculation
     start_time = time.time()
     frame_count = 0
-    fps_update_interval = 2  # Seconds
+    fps_update_interval = 1  # Seconds
     loop_counter = 0
     loop_counter_max = 5
 
+    stacked_arrays = []
+
+    # create the window and move it to the bottom right
+    window_size = (760, 1024, 3)
+    window_name = "filtered_image"
+    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
+    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+
+    # set up running average parameters
+    alpha = 0.5
+    running_avg = None
+
     while True:
 
-        arrays, metadata = picam2.capture_arrays(["main","lores"]) #"main","lores","raw"
+        arrays, metadata = picam2.capture_arrays(["raw","lores","main"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # arrays[2] = arrays[2].view(np.uint16)
-        # arrays[0] = process_raw(arrays[0], RGB = True)
+        arrays[0] = process_raw(arrays[0], RGB = True)
+
+        array_to_process = arrays[2]
+
+        # initalize avg
+        if running_avg is None:
+            running_avg = np.float32(array_to_process)
+        # compute avg
+        cv2.accumulateWeighted(array_to_process,running_avg,alpha)
+        b = cv2.convertScaleAbs(running_avg)
+
+        # stacked_arrays.append(array_to_process)
 
         # Increment frame count
         frame_count += 1
@@ -254,8 +216,23 @@ if __name__ == "__main__":
 
             fps = frame_count / elapsed_time
             print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
+
+            # a = np.stack(stacked_arrays)
+            # b = np.mean(a,axis = 0)
+            # c = b/b.max()
+            # d = (c*255).astype(np.uint8)
+
+            # b = cv2.convertScaleAbs(running_avg)
+            # c = running_avg/running_avg.max()
+
+            cv2.imshow(window_name,b)
+
+            stacked_arrays = []
+
             start_time = time.time()
             frame_count = 0
+
+
 
 
 
