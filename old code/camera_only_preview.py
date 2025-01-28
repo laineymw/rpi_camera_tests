@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     if use_preview:
         if use_default_preview_size:
-            image_WH = [1200,900]
+            image_WH = [600,450]
             if monitor_size:
                 picam2.start_preview(Preview.QTGL,
                     x=monitor_size[0]-int(image_WH[0]),
@@ -143,11 +143,11 @@ if __name__ == "__main__":
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 12.0 #22.0
+    AnalogueGain = 128.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    # ColourGains = [1.25, 1.35]
-    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
+    ColourGains = [1.25, 1.35]
+    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
 
             
     picam2.start()
@@ -178,15 +178,34 @@ if __name__ == "__main__":
 
     stacked_arrays = []
 
+    # create the window and move it to the bottom right
+    window_size = (760, 1024, 3)
+    window_name = "filtered_image"
+    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
+    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+
+    # set up running average parameters
+    alpha = 0.5
+    running_avg = None
+
     while True:
 
-        arrays, metadata = picam2.capture_arrays(["raw","lores"]) #"main","lores","raw"
+        arrays, metadata = picam2.capture_arrays(["raw","lores","main"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # arrays[2] = arrays[2].view(np.uint16)
         arrays[0] = process_raw(arrays[0], RGB = True)
 
-        array_to_process = arrays[0]
+        array_to_process = arrays[2]
+
+        # initalize avg
+        if running_avg is None:
+            running_avg = np.float32(array_to_process)
+        # compute avg
+        cv2.accumulateWeighted(array_to_process,running_avg,alpha)
+        b = cv2.convertScaleAbs(running_avg)
+
+        # stacked_arrays.append(array_to_process)
 
         # Increment frame count
         frame_count += 1
@@ -198,5 +217,23 @@ if __name__ == "__main__":
             fps = frame_count / elapsed_time
             print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
 
+            # a = np.stack(stacked_arrays)
+            # b = np.mean(a,axis = 0)
+            # c = b/b.max()
+            # d = (c*255).astype(np.uint8)
+
+            # b = cv2.convertScaleAbs(running_avg)
+            # c = running_avg/running_avg.max()
+
+            cv2.imshow(window_name,b)
+
+            stacked_arrays = []
+
             start_time = time.time()
             frame_count = 0
+
+
+
+
+
+

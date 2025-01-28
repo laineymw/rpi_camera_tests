@@ -10,14 +10,14 @@ from picamera2 import Picamera2, Preview
 import matplotlib.pyplot as plt
 import cv2
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False):
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
 
     if R or G or B or G1 or G2 or RGB2:
         RGB = False
 
-    if RGB:
+    if RGB: # return an rgb array
         blue_pixels = input_array[0::2,0::2]
         red_pixels = input_array[1::2,1::2]
         green1_pixels = input_array[0::2,1::2]
@@ -25,21 +25,24 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
 
         avg_green = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
 
-        out = np.stack((red_pixels,avg_green,blue_pixels),axis = -1)
-    if R:
+        if rgb_or_bgr:
+            out = np.stack((red_pixels,avg_green,blue_pixels),axis = -1)
+        else:
+            out = np.stack((blue_pixels,avg_green,red_pixels),axis = -1)
+    if R: # just the red pixels
         out = input_array[1::2,1::2]
-    if G:
+    if G: # just the green pixels (averaged)
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
         out = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
-    if G1:
+    if G1: # just the green 1 pixels
         out = input_array[0::2,1::2]
-    if G2:
+    if G2: # just the green 2 pixels
         out = input_array[1::2,0::2]
-    if B:
+    if B: # just blue pixels
         out = input_array[0::2,0::2]
-    if RGB2:
+    if RGB2: # 2x2 array of the pixel values
         blue_pixels = input_array[0::2,0::2]
         red_pixels = input_array[1::2,1::2]
         green1_pixels = input_array[0::2,1::2]
@@ -93,7 +96,7 @@ if __name__ == "__main__":
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
-        main= {"format": "RGB888", "size": (2028,1520)},
+        main= {"format": "RGB888", "size": (2028,1080)},
         lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
         raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
         display = "lores",buffer_count=1
@@ -102,7 +105,7 @@ if __name__ == "__main__":
 
     if use_preview:
         if use_default_preview_size:
-            image_WH = [1200,900]
+            image_WH = [600,450]
             if monitor_size:
                 picam2.start_preview(Preview.QTGL,
                     x=monitor_size[0]-int(image_WH[0]),
@@ -143,12 +146,11 @@ if __name__ == "__main__":
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 12.0 #22.0
+    AnalogueGain = 128.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    # ColourGains = [1.25, 1.35]
-    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
-
+    ColourGains = [1.25, 1.35]
+    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
             
     picam2.start()
     time.sleep(0.5)
@@ -178,15 +180,51 @@ if __name__ == "__main__":
 
     stacked_arrays = []
 
+    # create the window and move it to the bottom right
+    window_size = (760, 1024, 3)
+    window_name = "filtered_image"
+    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
+    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+    cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-50)
+
+
+    # set up running average parameters
+    alpha = 0.75
+    running_avg = None
+
     while True:
 
         arrays, metadata = picam2.capture_arrays(["raw","lores"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], RGB = True)
+        arrays[0] = process_raw(arrays[0], RGB = True, rgb_or_bgr=False)
 
         array_to_process = arrays[0]
+
+        # initalize avg
+        if running_avg is None:
+            running_avg = np.float32(array_to_process)
+            black_columns = np.sum((running_avg[:,:,0]==running_avg[:,:,1])*1,axis = 0)==(running_avg[:,:,0].shape[0])
+
+            num_black_columns = np.sum(black_columns)
+            temp_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
+            scale_min = temp_img.min()
+            scale_max = temp_img.max()
+            scale_minmax = 1/(scale_max-scale_min)
+
+        # compute avg
+        cv2.accumulateWeighted(np.float32(array_to_process),running_avg,alpha)
+
+        alpha_scale = 255
+        beta_scale = 0
+        display_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
+        # display_img = cv2.normalize(display_img,None,alpha=0,beta=1,norm_type=cv2.NORM_MINMAX)
+        display_img -= scale_min
+        display_img *= scale_minmax
+        display_img = cv2.convertScaleAbs(display_img,alpha=alpha_scale,beta = beta_scale)
+        # show averaged image
+        cv2.imshow(window_name,display_img) # this is just the 2^14
 
         # Increment frame count
         frame_count += 1
@@ -200,3 +238,9 @@ if __name__ == "__main__":
 
             start_time = time.time()
             frame_count = 0
+
+
+
+
+
+
