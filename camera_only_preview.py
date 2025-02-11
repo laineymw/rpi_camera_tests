@@ -93,10 +93,10 @@ if __name__ == "__main__":
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
-        main= {"format": "RGB888", "size": (2028,1520)},
-        lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
-        raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
-        display = "lores",buffer_count=1
+        main= {"format": "XBGR8888", "size": (2028,1520)},
+        # lores = {"format": "XBGR8888","size":(2028,1520)},# (507,380),(480,360)
+        # raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
+        # display = "main",buffer_count=1
     )
     picam2.configure(cam_config)
 
@@ -143,12 +143,11 @@ if __name__ == "__main__":
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 12.0 #22.0
+    AnalogueGain = 8.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    # ColourGains = [1.25, 1.35]
-    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
-
+    ColourGains = [2.11, 3.85]
+    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
             
     picam2.start()
     time.sleep(0.5)
@@ -161,9 +160,9 @@ if __name__ == "__main__":
         os.remove(f)
 
     print('capturing data')
-    arrays, metadata = picam2.capture_arrays(["lores"])
-    camera_metadata = main_camera_stream_config
-    metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    # arrays, metadata = picam2.capture_arrays(["lores"])
+    # camera_metadata = main_camera_stream_config
+    # metadata["ISO"] = round(100*metadata["AnalogueGain"])
     # export_images(arrays,cam_config,metadata,camera_metadata,output_path)
 
     # plt.ion()
@@ -178,25 +177,28 @@ if __name__ == "__main__":
 
     stacked_arrays = []
 
-    while True:
+    print("press enter stop")
+    input('...')
 
-        arrays, metadata = picam2.capture_arrays(["raw","lores"]) #"main","lores","raw"
-        camera_metadata = main_camera_stream_config
-        metadata["ISO"] = round(100*metadata["AnalogueGain"])
-        # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], RGB = True)
+    # while True:
 
-        array_to_process = arrays[0]
+    #     # arrays, metadata = picam2.capture_arrays(["main","lores"]) #"main","lores","raw"
+    #     # camera_metadata = main_camera_stream_config
+    #     # metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    #     # # arrays[2] = arrays[2].view(np.uint16)
+    #     # arrays[0] = process_raw(arrays[0], RGB = True)
 
-        # Increment frame count
-        frame_count += 1
+    #     # array_to_process = arrays[0]
 
-        # Calculate and print FPS every 5 seconds
-        elapsed_time = time.time() - start_time
-        if elapsed_time >= fps_update_interval:
+    #     # Increment frame count
+    #     frame_count += 1
 
-            fps = frame_count / elapsed_time
-            print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
+    #     # Calculate and print FPS every 5 seconds
+    #     elapsed_time = time.time() - start_time
+    #     if elapsed_time >= fps_update_interval:
 
-            start_time = time.time()
-            frame_count = 0
+    #         fps = frame_count / elapsed_time
+    #         print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
+
+    #         start_time = time.time()
+    #         frame_count = 0
