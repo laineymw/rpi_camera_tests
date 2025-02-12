@@ -96,13 +96,14 @@ if __name__ == "__main__":
         main= {"format": "XBGR8888", "size": (2028,1520)},
         # lores = {"format": "XBGR8888","size":(2028,1520)},# (507,380),(480,360)
         # raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
-        # display = "main",buffer_count=1
+        # display = "main",
+        # buffer_count=2
     )
     picam2.configure(cam_config)
 
     if use_preview:
         if use_default_preview_size:
-            image_WH = [1200,900]
+            image_WH = [1200,900]#[1200,900]
             if monitor_size:
                 picam2.start_preview(Preview.QTGL,
                     x=monitor_size[0]-int(image_WH[0]),
@@ -139,16 +140,19 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/30
+    exp_time = 1/15
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 8.0 #22.0
+    AnalogueGain = 128.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    ColourGains = [2.11, 3.85]
+    ColourGains = [1.0,1.0] #[2.11, 3.85] [2.61,1.94] #
     picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
             
+    NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
+    picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
+
     picam2.start()
     time.sleep(0.5)
     picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",

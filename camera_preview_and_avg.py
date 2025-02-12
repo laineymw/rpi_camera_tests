@@ -146,11 +146,14 @@ if __name__ == "__main__":
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 8.0 #22.0
+    AnalogueGain = 128.0 #22.0
     picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    ColourGains = [1.25, 1.35]
+    ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
     picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
+            
+    NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
+    picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
             
     picam2.start()
     time.sleep(0.5)
@@ -203,29 +206,21 @@ if __name__ == "__main__":
 
         # initalize avg
         if running_avg is None:
-            running_avg = np.float32(array_to_process)
-            black_columns = np.sum((running_avg[:,:,0]==running_avg[:,:,1])*1,axis = 0)==(running_avg[:,:,0].shape[0])
+            # running_avg = np.float32(array_to_process)
+            # black_columns = np.sum((running_avg[:,:,0]==running_avg[:,:,1])*1,axis = 0)==(running_avg[:,:,0].shape[0])
 
-            num_black_columns = np.sum(black_columns)
-            temp_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
-            scale_min = temp_img.min()
-            scale_max = temp_img.max()
-            scale_minmax = scale_max-scale_min
-
-            alpha_scale = 255
-            beta_scale = 0
+            # num_black_columns = np.sum(black_columns)
+            # # temp_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
 
             scaler = 1/16384
 
-        # compute avg
-        cv2.accumulateWeighted(array_to_process,running_avg,alpha)
+        # # compute avg
+        # cv2.accumulateWeighted(array_to_process,running_avg,alpha)
+        # display_img = (running_avg)[:,:int(-1*num_black_columns),:]
 
-        display_img = (running_avg)[:,:int(-1*num_black_columns),:]
+        display_img = np.float32((array_to_process))#[:,:int(-1*num_black_columns),:])
         np.multiply(display_img,scaler,out = display_img)
-
-        # np.subtract(display_img,display_img.min(),out = display_img)
-        # np.divide(display_img,display_img.max(),out = display_img)
-        # np.clip(display_img,a_min=0,a_max=1,out=display_img)
+        np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
 
         display_img = cv2.resize(display_img,(480,360))
         cv2.imshow(window_name,display_img) # this is just the 2^14
@@ -236,11 +231,6 @@ if __name__ == "__main__":
         # Calculate and print FPS every 5 seconds
         elapsed_time = time.time() - start_time
         if elapsed_time >= fps_update_interval:
-
-            # temp_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
-            # scale_min = temp_img.min()
-            # scale_max = temp_img.max()
-            # scale_minmax = scale_max-scale_min
 
             fps = frame_count / elapsed_time
             print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
