@@ -142,18 +142,18 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/30
-    exp_time_us = int(round(exp_time * 1000000))
-    picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
+    # exp_time = 1/20
+    # exp_time_us = int(round(exp_time * 1000000))
+    # picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 128.0 #22.0
-    picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
+    # AnalogueGain = 128.0 #22.0
+    # picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
-    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
+    # ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
+    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
             
-    NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
-    picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
+    # NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
+    # picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
             
     picam2.start()
     time.sleep(0.5)
@@ -222,7 +222,7 @@ if __name__ == "__main__":
         np.multiply(display_img,scaler,out = display_img)
         np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
 
-        display_img = cv2.resize(display_img,(480,360))
+        display_img = cv2.resize(display_img,(720,480))
         cv2.imshow(window_name,display_img) # this is just the 2^14
 
         # Increment frame count
