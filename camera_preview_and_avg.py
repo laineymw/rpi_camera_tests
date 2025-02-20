@@ -10,7 +10,7 @@ from picamera2 import Picamera2, Preview
 import matplotlib.pyplot as plt
 import cv2
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True):
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
 
@@ -142,12 +142,12 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    # exp_time = 1/20
-    # exp_time_us = int(round(exp_time * 1000000))
-    # picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
+    exp_time = 1/20
+    exp_time_us = int(round(exp_time * 1000000))
+    picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    # AnalogueGain = 128.0 #22.0
-    # picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
+    AnalogueGain = 128.0 #22.0
+    picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
     # ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
     # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
@@ -157,13 +157,13 @@ if __name__ == "__main__":
             
     picam2.start()
     time.sleep(0.5)
-    picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
+    picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
     time.sleep(0.5)
 
-    # Clean the output folder
-    files = glob.glob(os.path.join(output_path, "*"))
-    for f in files:
-        os.remove(f)
+    # # Clean the output folder
+    # files = glob.glob(os.path.join(output_path, "*"))
+    # for f in files:
+    #     os.remove(f)
 
     print('capturing data')
     # arrays, metadata = picam2.capture_arrays(["lores"])
@@ -184,45 +184,34 @@ if __name__ == "__main__":
     stacked_arrays = []
 
     # create the window and move it to the bottom right
-    window_size = (360*2, 480, 3)
+    window_size = (760, 1024, 3)
     window_name = "filtered_image"
+    test_array = np.zeros((760,1024,3),dtype = np.uint8)
+    cv2.imshow(window_name,test_array)
     cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
-    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
-    cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-50)
+    # cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+    cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-150)
 
     # set up running average parameters
     alpha = 0.5
     running_avg = None
+    scaler = 1/16384
 
     while True:
 
         arrays, metadata = picam2.capture_arrays(["raw"])#,"lores"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
-        # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], RGB = True, rgb_or_bgr=False)
+        # # # arrays[2] = arrays[2].view(np.uint16)
+        arrays[0] = process_raw(arrays[0], rgb_or_bgr=False, G = True) # RGB = True, 
 
         array_to_process = arrays[0]
-
-        # initalize avg
-        if running_avg is None:
-            # running_avg = np.float32(array_to_process)
-            # black_columns = np.sum((running_avg[:,:,0]==running_avg[:,:,1])*1,axis = 0)==(running_avg[:,:,0].shape[0])
-
-            # num_black_columns = np.sum(black_columns)
-            # # temp_img = (running_avg/16384)[:,:int(-1*num_black_columns),:]
-
-            scaler = 1/16384
-
-        # # compute avg
-        # cv2.accumulateWeighted(array_to_process,running_avg,alpha)
-        # display_img = (running_avg)[:,:int(-1*num_black_columns),:]
 
         display_img = np.float32((array_to_process))#[:,:int(-1*num_black_columns),:])
         np.multiply(display_img,scaler,out = display_img)
         np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
 
-        display_img = cv2.resize(display_img,(720,480))
+        # display_img = cv2.resize(display_img,(720,480))
         cv2.imshow(window_name,display_img) # this is just the 2^14
 
         # Increment frame count

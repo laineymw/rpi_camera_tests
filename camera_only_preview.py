@@ -155,13 +155,13 @@ if __name__ == "__main__":
 
     picam2.start()
     time.sleep(0.5)
-    picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
+    picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
     time.sleep(0.5)
 
-    # Clean the output folder
-    files = glob.glob(os.path.join(output_path, "*"))
-    for f in files:
-        os.remove(f)
+    # # Clean the output folder
+    # files = glob.glob(os.path.join(output_path, "*"))
+    # for f in files:
+    #     os.remove(f)
 
     print('capturing data')
     # arrays, metadata = picam2.capture_arrays(["lores"])
