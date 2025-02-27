@@ -13,6 +13,8 @@ import cv2
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
+        if mono:
+            return input_array
 
     if R or G or B or G1 or G2 or RGB2:
         RGB = False
@@ -142,12 +144,12 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/20
-    exp_time_us = int(round(exp_time * 1000000))
-    picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
+    # exp_time = 1/10
+    # exp_time_us = int(round(exp_time * 1000000))
+    # picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 128.0 #22.0
-    picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
+    # AnalogueGain = 128.0 #22.0
+    # picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
     # ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
     # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
@@ -203,7 +205,7 @@ if __name__ == "__main__":
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # # # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], rgb_or_bgr=False, G = True) # RGB = True, 
+        arrays[0] = process_raw(arrays[0], mono = True, rgb_or_bgr=False)#, G = True) # RGB = True, 
 
         array_to_process = arrays[0]
 
@@ -211,7 +213,7 @@ if __name__ == "__main__":
         np.multiply(display_img,scaler,out = display_img)
         np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
 
-        # display_img = cv2.resize(display_img,(720,480))
+        display_img = cv2.resize(display_img,(1024,760))
         cv2.imshow(window_name,display_img) # this is just the 2^14
 
         # Increment frame count
