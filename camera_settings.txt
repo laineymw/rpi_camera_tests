@@ -8,7 +8,7 @@
 "AwbMode" : 0,
 "Brightness" : 0.0,
 "CnnEnableInputTensor" : false,
-"ColourGains" : [2.28, 2.23],
+"ColourGains" : [2.28, 2.35],
 "Contrast" : 1.0,
 "ExposureTime" : 32987,
 "ExposureValue" : 0.0,

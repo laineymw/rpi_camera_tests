@@ -160,7 +160,8 @@ if __name__ == "__main__":
     loop_counter = 0
     loop_counter_max = 5
     display_raw_data = True
-    center_crop = True
+    display_adjusted_color = True # this is only for displaying images doesnt affect raw img
+    center_crop = False
 
     stacked_arrays = []
 
@@ -171,13 +172,12 @@ if __name__ == "__main__":
     if display_raw_data:
         cv2.imshow(window_name,test_array)
         cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
-        # cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
         cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-150)
 
     # set up running average parameters
     alpha = 0.5
     running_avg = None
-    scaler = 1/16384 # 2**14
+    # scaler = 1/16384 # 2**14
     scaler = 1/ (2**16)
 
     while True:
@@ -185,15 +185,18 @@ if __name__ == "__main__":
         arrays, metadata = picam2.capture_arrays(["raw"])#,"lores"]) #"main","lores","raw"
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
-        # # # arrays[2] = arrays[2].view(np.uint16)
         arrays[0] = process_raw(arrays[0], RGB= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
 
         array_to_process = arrays[0]
 
         display_img = np.float32((array_to_process))
-        np.multiply(display_img,scaler,out = display_img)
-        np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
-        # display_img = array_to_process
+        if display_raw_data:
+            np.multiply(display_img,scaler,out = display_img)
+            if display_adjusted_color and (len(display_img.shape) > 2):
+                # assume using BGR
+                display_img[:,:,0] = display_img[:,:,0]*default_image_settings['ColourGains'][1]
+                display_img[:,:,2] = display_img[:,:,2]*default_image_settings['ColourGains'][0]
+            np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
 
         img_shape = display_img.shape
         if img_shape != (760,1024):
