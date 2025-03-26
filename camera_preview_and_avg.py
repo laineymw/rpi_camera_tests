@@ -25,7 +25,7 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        avg_green = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
+        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
 
         if rgb_or_bgr:
             out = np.stack((red_pixels,avg_green,blue_pixels),axis = -1)
@@ -37,7 +37,9 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        out = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
+        # out = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
+        out = (green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2
+        out = out.astype(np.uint16)
     if G1: # just the green 1 pixels
         out = input_array[0::2,1::2]
     if G2: # just the green 2 pixels
@@ -143,38 +145,13 @@ if __name__ == "__main__":
         except:
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
-
-    # exp_time = 1/10
-    # exp_time_us = int(round(exp_time * 1000000))
-    # picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
-
-    # AnalogueGain = 128.0 #22.0
-    # picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
-
-    # ColourGains = [1,1] #[2.11, 3.85] [2.61,1.94] #
-    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
-            
-    # NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
-    # picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
             
     picam2.start()
     time.sleep(0.5)
     picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
     time.sleep(0.5)
 
-    # # Clean the output folder
-    # files = glob.glob(os.path.join(output_path, "*"))
-    # for f in files:
-    #     os.remove(f)
-
     print('capturing data')
-    # arrays, metadata = picam2.capture_arrays(["lores"])
-    # camera_metadata = main_camera_stream_config
-    # metadata["ISO"] = round(100*metadata["AnalogueGain"])
-    # export_images(arrays,cam_config,metadata,camera_metadata,output_path)
-
-    # plt.ion()
-    # fig, ax = plt.subplots()
 
     # Variables for FPS calculation
     start_time = time.time()
@@ -182,6 +159,8 @@ if __name__ == "__main__":
     fps_update_interval = 3  # Seconds
     loop_counter = 0
     loop_counter_max = 5
+    display_raw_data = True
+    center_crop = True
 
     stacked_arrays = []
 
@@ -189,15 +168,17 @@ if __name__ == "__main__":
     window_size = (760, 1024, 3)
     window_name = "filtered_image"
     test_array = np.zeros((760,1024,3),dtype = np.uint8)
-    cv2.imshow(window_name,test_array)
-    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
-    # cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
-    cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-150)
+    if display_raw_data:
+        cv2.imshow(window_name,test_array)
+        cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
+        # cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+        cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-150)
 
     # set up running average parameters
     alpha = 0.5
     running_avg = None
-    scaler = 1/16384
+    scaler = 1/16384 # 2**14
+    scaler = 1/ (2**16)
 
     while True:
 
@@ -205,16 +186,28 @@ if __name__ == "__main__":
         camera_metadata = main_camera_stream_config
         metadata["ISO"] = round(100*metadata["AnalogueGain"])
         # # # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], mono = True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+        arrays[0] = process_raw(arrays[0], RGB= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
 
         array_to_process = arrays[0]
 
-        display_img = np.float32((array_to_process))#[:,:int(-1*num_black_columns),:])
+        display_img = np.float32((array_to_process))
         np.multiply(display_img,scaler,out = display_img)
         np.clip(display_img,a_min=0.0,a_max=1.0, out=display_img)
+        # display_img = array_to_process
 
-        display_img = cv2.resize(display_img,(1024,760))
-        cv2.imshow(window_name,display_img) # this is just the 2^14
+        img_shape = display_img.shape
+        if img_shape != (760,1024):
+            display_img = cv2.resize(display_img,(1024,760))
+
+        if center_crop:
+            center = [img_shape[0]/2,img_shape[1]/2]
+            small_side = min(img_shape[0:2])
+            y1,y2 = int(center[0]-small_side/2), int(center[0]+small_side/2)
+            x1,x2 = int(center[1]-small_side/2), int(center[1]+small_side/2)
+            display_img = display_img[y1:y2,x1:x2]            
+            
+        if display_raw_data:
+            cv2.imshow(window_name,display_img) # 
 
         # Increment frame count
         frame_count += 1
