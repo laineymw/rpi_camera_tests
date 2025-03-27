@@ -97,37 +97,13 @@ if __name__ == "__main__":
 
     picam2 = Picamera2()
 
-    cam_config = picam2.create_preview_configuration(
+    cam_config = picam2.create_video_configuration(
         main= {"format": "YUV420", "size": (480,360)},#(int(2028/2),int(1520/2))}, #(480,360)},
         # lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
         raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
         display = "main" ,queue=False ,buffer_count=4 #, SRGGB12_CSI2P
     )
     picam2.configure(cam_config)
-
-    if use_preview:
-        if use_default_preview_size:
-            image_WH = [600,450]
-            if monitor_size:
-                picam2.start_preview(Preview.NULL,
-                    x=monitor_size[0]-int(image_WH[0]),
-                    y=1, 
-                    width = int(image_WH[0]),
-                    height = int(image_WH[1]))
-            else:
-                picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
-        else:
-            viewer_multiplier = 2.5
-            image_WH = [int(viewer_multiplier*cam_config['lores']['size'][0]),
-                        int(viewer_multiplier*cam_config['lores']['size'][1])]
-            if monitor_size:
-                picam2.start_preview(Preview.QTGL,
-                    x=monitor_size[0]-int(image_WH[0]),
-                    y=1, 
-                    width = int(image_WH[0]),
-                    height = int(image_WH[1]))
-            else:
-                picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
 
     main_camera_stream_config = cam_config['main']
 
