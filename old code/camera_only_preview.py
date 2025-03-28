@@ -93,16 +93,17 @@ if __name__ == "__main__":
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
-        main= {"format": "RGB888", "size": (2028,1520)},
-        lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
-        raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
-        display = "lores",buffer_count=1
+        main= {"format": "XBGR8888", "size": (2028,1520)},
+        # lores = {"format": "XBGR8888","size":(2028,1520)},# (507,380),(480,360)
+        # raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
+        # display = "main",
+        # buffer_count=2
     )
     picam2.configure(cam_config)
 
     if use_preview:
         if use_default_preview_size:
-            image_WH = [600,450]
+            image_WH = [1200,900]#[1200,900]
             if monitor_size:
                 picam2.start_preview(Preview.QTGL,
                     x=monitor_size[0]-int(image_WH[0]),
@@ -139,31 +140,33 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/30
-    exp_time_us = int(round(exp_time * 1000000))
-    picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
+    # exp_time = 1/20
+    # exp_time_us = int(round(exp_time * 1000000))
+    # picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
 
-    AnalogueGain = 128.0 #22.0
-    picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
+    # AnalogueGain = 128.0 #22.0
+    # picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
 
-    ColourGains = [1.25, 1.35]
-    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
-
+    # ColourGains = [1.0,1.0] #[2.11, 3.85] [2.61,1.94] #
+    # picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
             
+    # NoiseReductionMode = 2 # "Off" "Fast" "HighQuality"
+    # picam2.set_controls({'NoiseReductionMode': NoiseReductionMode})
+
     picam2.start()
     time.sleep(0.5)
-    picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
+    picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
     time.sleep(0.5)
 
-    # Clean the output folder
-    files = glob.glob(os.path.join(output_path, "*"))
-    for f in files:
-        os.remove(f)
+    # # Clean the output folder
+    # files = glob.glob(os.path.join(output_path, "*"))
+    # for f in files:
+    #     os.remove(f)
 
     print('capturing data')
-    arrays, metadata = picam2.capture_arrays(["lores"])
-    camera_metadata = main_camera_stream_config
-    metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    # arrays, metadata = picam2.capture_arrays(["lores"])
+    # camera_metadata = main_camera_stream_config
+    # metadata["ISO"] = round(100*metadata["AnalogueGain"])
     # export_images(arrays,cam_config,metadata,camera_metadata,output_path)
 
     # plt.ion()
@@ -178,62 +181,28 @@ if __name__ == "__main__":
 
     stacked_arrays = []
 
-    # create the window and move it to the bottom right
-    window_size = (760, 1024, 3)
-    window_name = "filtered_image"
-    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
-    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
+    print("press enter stop")
+    input('...')
 
-    # set up running average parameters
-    alpha = 0.5
-    running_avg = None
+    # while True:
 
-    while True:
+    #     # arrays, metadata = picam2.capture_arrays(["main","lores"]) #"main","lores","raw"
+    #     # camera_metadata = main_camera_stream_config
+    #     # metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    #     # # arrays[2] = arrays[2].view(np.uint16)
+    #     # arrays[0] = process_raw(arrays[0], RGB = True)
 
-        arrays, metadata = picam2.capture_arrays(["raw","lores","main"]) #"main","lores","raw"
-        camera_metadata = main_camera_stream_config
-        metadata["ISO"] = round(100*metadata["AnalogueGain"])
-        # arrays[2] = arrays[2].view(np.uint16)
-        arrays[0] = process_raw(arrays[0], RGB = True)
+    #     # array_to_process = arrays[0]
 
-        array_to_process = arrays[2]
+    #     # Increment frame count
+    #     frame_count += 1
 
-        # initalize avg
-        if running_avg is None:
-            running_avg = np.float32(array_to_process)
-        # compute avg
-        cv2.accumulateWeighted(array_to_process,running_avg,alpha)
-        b = cv2.convertScaleAbs(running_avg)
+    #     # Calculate and print FPS every 5 seconds
+    #     elapsed_time = time.time() - start_time
+    #     if elapsed_time >= fps_update_interval:
 
-        # stacked_arrays.append(array_to_process)
+    #         fps = frame_count / elapsed_time
+    #         print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
 
-        # Increment frame count
-        frame_count += 1
-
-        # Calculate and print FPS every 5 seconds
-        elapsed_time = time.time() - start_time
-        if elapsed_time >= fps_update_interval:
-
-            fps = frame_count / elapsed_time
-            print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
-
-            # a = np.stack(stacked_arrays)
-            # b = np.mean(a,axis = 0)
-            # c = b/b.max()
-            # d = (c*255).astype(np.uint8)
-
-            # b = cv2.convertScaleAbs(running_avg)
-            # c = running_avg/running_avg.max()
-
-            cv2.imshow(window_name,b)
-
-            stacked_arrays = []
-
-            start_time = time.time()
-            frame_count = 0
-
-
-
-
-
-
+    #         start_time = time.time()
+    #         frame_count = 0

@@ -2,8 +2,8 @@ from picamera2 import Picamera2, Preview
 import numpy as np
 import cv2
 import threading
-import time, json
-
+import time
+import json
 
 ## This is as fast as i can get it without using openGL 
 ## using raw frames i can get it about 35 fps
@@ -21,13 +21,13 @@ config = picam2.create_still_configuration(
 )
 picam2.configure(config)
 
-# open the default image metadata and read in the settings as a sorted dict
+# Open the default image metadata and read in the settings as a sorted dict
 with open("/home/r/rpi_camera_tests/camera_settings.txt") as f:
     default_image_settings = f.read()
 default_image_settings = json.loads(default_image_settings)
 default_image_settings = sort_dict(default_image_settings)
 
-# apply the default settings to the current camera
+# Apply the default settings to the current camera
 for key in default_image_settings:
     try:
         picam2.set_controls({key:default_image_settings[key]})
@@ -36,24 +36,29 @@ for key in default_image_settings:
         print('FAIL to set camera setting')
         print(key,default_image_settings[key])
 
+# Exposure settings for testing
 exp_time = 1/60
 exp_time_us = int(round(exp_time * 1000000))
-picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
-        
+picam2.set_controls({"ExposureTime": exp_time_us}) # Overwrite the exposure for testing
+
 # FPS tracking variables
 frame_count = 0
 start_time = time.time()
 fps = 0
-latest_frame = None
 
 # Start QTGL preview
 picam2.start_preview(Preview.QTGL)
 picam2.start()
 
+# Target FPS (30 FPS)
+target_fps = 30
+frame_duration = 1 / target_fps  # Duration per frame (seconds)
+
 # Process frames asynchronously
 def process_frames():
-    global frame_count, fps, start_time, latest_frame
+    global frame_count, fps, start_time
     while True:
+        # Capture frame at fixed interval
         request = picam2.capture_request()
         m = request.make_array("raw")  # Zero-copy buffer access
         raw_data = m.view(np.uint16)
@@ -65,9 +70,6 @@ def process_frames():
         # Use OpenCV for faster processing
         rgb_image = cv2.cvtColor(raw_8bit, cv2.COLOR_BAYER_RG2RGB)
 
-        # get the raw data frame
-        latest_frame = rgb_image
-
         # Convert RGB888 → RGB8888 (QTGL requires 4 channels)
         rgba_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2RGBA)
 
@@ -78,33 +80,26 @@ def process_frames():
             fps = frame_count / elapsed_time
             frame_count = 0
             start_time = time.time()
-            # print(fps)
 
         # Draw FPS counter on the frame
         fps_text = f"FPS: {int(fps)}"
         cv2.putText(rgba_image, fps_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 
                     1, (255, 0, 0, 255), 2, cv2.LINE_AA)
-        # print(fps)
 
         # Send to preview
         picam2.set_overlay(rgba_image)
 
-        time.sleep(0.0001)  # Tiny sleep to prevent CPU overload
+        # Sleep to lock the frame rate to 30 FPS
+        time.sleep(frame_duration)  # Ensures 30 FPS
 
 # Launch the frame processing in a background thread
 thread = threading.Thread(target=process_frames, daemon=True)
 thread.start()
 
-# Main loop to calculate average RGB values
+# Keep the script alive
 while True:
-    if latest_frame is not None:
-        # Calculate average R, G, B values from the latest frame
-        avg_r = np.mean(latest_frame[:, :, 0])  # Red channel
-        avg_g = np.mean(latest_frame[:, :, 1])  # Green channel
-        avg_b = np.mean(latest_frame[:, :, 2])  # Blue channel
-
-        # Display average R, G, B values on the frame
-        avg_values_text = f"Avg R: {int(avg_r)} G: {int(avg_g)} B: {int(avg_b)}"
-        print(avg_values_text)
-
-    time.sleep(1)  # Approx 30 FPS
+    try:
+        time.sleep(1)  # Keep main thread running
+    except KeyboardInterrupt:
+        print("Interrupted by user.")
+        break

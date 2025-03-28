@@ -10,41 +10,36 @@ from picamera2 import Picamera2, Preview
 import matplotlib.pyplot as plt
 import cv2
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
-        if mono:
-            return input_array
 
     if R or G or B or G1 or G2 or RGB2:
         RGB = False
 
-    if RGB: # return an rgb array
+    if RGB:
         blue_pixels = input_array[0::2,0::2]
         red_pixels = input_array[1::2,1::2]
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+        avg_green = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
 
-        if rgb_or_bgr:
-            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
-        else:
-            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
-    if R: # just the red pixels
+        out = np.stack((red_pixels,avg_green,blue_pixels),axis = -1)
+    if R:
         out = input_array[1::2,1::2]
-    if G: # just the green pixels (averaged)
+    if G:
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
-    if G1: # just the green 1 pixels
+        out = ((green1_pixels+green2_pixels)/2).astype(np.uint16)
+    if G1:
         out = input_array[0::2,1::2]
-    if G2: # just the green 2 pixels
+    if G2:
         out = input_array[1::2,0::2]
-    if B: # just blue pixels
+    if B:
         out = input_array[0::2,0::2]
-    if RGB2: # 2x2 array of the pixel values
+    if RGB2:
         blue_pixels = input_array[0::2,0::2]
         red_pixels = input_array[1::2,1::2]
         green1_pixels = input_array[0::2,1::2]
@@ -98,10 +93,10 @@ if __name__ == "__main__":
     picam2 = Picamera2()
 
     cam_config = picam2.create_preview_configuration(
-        main= {"format": "YUV420", "size": (480,360)},#(int(2028/2),int(1520/2))}, #(480,360)},
-        # lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
+        main= {"format": "RGB888", "size": (2028,1520)},
+        lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
         raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
-        display = "main" ,queue=False ,buffer_count=4 #, SRGGB12_CSI2P
+        display = "lores",buffer_count=1
     )
     picam2.configure(cam_config)
 
@@ -109,7 +104,7 @@ if __name__ == "__main__":
         if use_default_preview_size:
             image_WH = [600,450]
             if monitor_size:
-                picam2.start_preview(Preview.NULL,
+                picam2.start_preview(Preview.QTGL,
                     x=monitor_size[0]-int(image_WH[0]),
                     y=1, 
                     width = int(image_WH[0]),
@@ -118,14 +113,12 @@ if __name__ == "__main__":
                 picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
         else:
             viewer_multiplier = 2.5
-            image_WH = [int(viewer_multiplier*cam_config['lores']['size'][0]),
-                        int(viewer_multiplier*cam_config['lores']['size'][1])]
             if monitor_size:
                 picam2.start_preview(Preview.QTGL,
-                    x=monitor_size[0]-int(image_WH[0]),
+                    x=monitor_size[0]-int(viewer_multiplier*cam_config['lores']['size'][0]),
                     y=1, 
-                    width = int(image_WH[0]),
-                    height = int(image_WH[1]))
+                    width = int(viewer_multiplier*cam_config['lores']['size'][0]),
+                    height = int(viewer_multiplier*cam_config['lores']['size'][1]))
             else:
                 picam2.start_preview(Preview.QTGL,x=500,y=1, width = 640, height = 480)
 
@@ -146,86 +139,73 @@ if __name__ == "__main__":
             print('FAIL to set camera setting')
             print(key,default_image_settings[key])
 
-    exp_time = 1/60
+    exp_time = 1/30
     exp_time_us = int(round(exp_time * 1000000))
     picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
+
+    AnalogueGain = 128.0 #22.0
+    picam2.set_controls({'AnalogueGain': AnalogueGain}) # overwrite analog gain
+
+    ColourGains = [1.25, 1.35]
+    picam2.set_controls({'ColourGains': ColourGains}) # overwrite analog gain
+
             
     picam2.start()
     time.sleep(0.5)
-    picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
+    picam2.title_fields = ["ExposureTime","AnalogueGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
     time.sleep(0.5)
 
+    # Clean the output folder
+    files = glob.glob(os.path.join(output_path, "*"))
+    for f in files:
+        os.remove(f)
+
     print('capturing data')
+    arrays, metadata = picam2.capture_arrays(["lores"])
+    camera_metadata = main_camera_stream_config
+    metadata["ISO"] = round(100*metadata["AnalogueGain"])
+    # export_images(arrays,cam_config,metadata,camera_metadata,output_path)
+
+    # plt.ion()
+    # fig, ax = plt.subplots()
 
     # Variables for FPS calculation
     start_time = time.time()
     frame_count = 0
-    fps_update_interval = 3  # Seconds
+    fps_update_interval = 1  # Seconds
     loop_counter = 0
     loop_counter_max = 5
-    display_raw_data = True
-    display_adjusted_color = True # this is only for displaying images doesnt affect raw img
-    center_crop = False
 
     stacked_arrays = []
 
     # create the window and move it to the bottom right
-    
-    if center_crop:
-        window_size = (360,360,3) #(760,760,3) #
-        test_array = np.zeros(window_size,dtype = np.uint8)
-    else:
-        window_size = (360,480,3)#(760, 1024, 3) #
-        test_array = np.zeros(window_size,dtype = np.uint8)
+    window_size = (760, 1024, 3)
     window_name = "filtered_image"
-    if display_raw_data:
-        cv2.imshow(window_name,test_array)
-        cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
-        cv2.moveWindow(window_name,10,monitor_size[1]-window_size[0]-150)
+    cv2.namedWindow(window_name,cv2.WINDOW_AUTOSIZE) # cv2.WINDOW_NORMAL OR cv2.WINDOW_AUTOSIZE
+    cv2.moveWindow(window_name,monitor_size[0]-window_size[1],monitor_size[1]-window_size[0]-50)
 
     # set up running average parameters
     alpha = 0.5
     running_avg = None
-    # scaler = 1/16384 # 2**14
-    scaler = 1/(2**16)
 
     while True:
 
-        array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
-        # camera_metadata = main_camera_stream_config
-        # metadata["ISO"] = round(100*metadata["AnalogueGain"])
-        array_to_process = process_raw(array_to_process, RGB= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
-        
-        if display_raw_data:
-            # convert to uint8 for display ease
-            display_img = (array_to_process >> 8).astype(np.uint8)
+        arrays, metadata = picam2.capture_arrays(["raw","lores","main"]) #"main","lores","raw"
+        camera_metadata = main_camera_stream_config
+        metadata["ISO"] = round(100*metadata["AnalogueGain"])
+        # arrays[2] = arrays[2].view(np.uint16)
+        arrays[0] = process_raw(arrays[0], RGB = True)
 
-            if display_adjusted_color and (len(display_img.shape) > 2):
-                # convert back to uint16 for overflow 
-                display_img = display_img.astype(np.uint16)
-                # assume using BGR
-                display_img[...,0] = display_img[...,0]*default_image_settings['ColourGains'][1]
-                display_img[...,2] = display_img[...,2]*default_image_settings['ColourGains'][0]
-                display_img = np.clip(display_img,a_min=0,a_max=255).astype(np.uint8)
+        array_to_process = arrays[2]
 
-            img_shape = display_img.shape
-            # check if the display image fits in the display window
-            if img_shape != window_size and img_shape != window_size[0:2]:
-                display_img = cv2.resize(display_img,(window_size[1],window_size[0]))
+        # initalize avg
+        if running_avg is None:
+            running_avg = np.float32(array_to_process)
+        # compute avg
+        cv2.accumulateWeighted(array_to_process,running_avg,alpha)
+        b = cv2.convertScaleAbs(running_avg)
 
-        if center_crop:
-            if not display_raw_data:
-                display_img = np.float32((array_to_process))
-            img_shape = display_img.shape
-            center = [img_shape[0]/2,img_shape[1]/2]
-            small_side = min(img_shape[0:2])
-            y1,y2 = int(center[0]-small_side/2), int(center[0]+small_side/2)
-            x1,x2 = int(center[1]-small_side/2), int(center[1]+small_side/2)
-            display_img = display_img[y1:y2,x1:x2]            
-            
-        if display_raw_data:
-            cv2.imshow(window_name,display_img) # 
-            cv2.waitKey(1)
+        # stacked_arrays.append(array_to_process)
 
         # Increment frame count
         frame_count += 1
@@ -236,6 +216,18 @@ if __name__ == "__main__":
 
             fps = frame_count / elapsed_time
             print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
+
+            # a = np.stack(stacked_arrays)
+            # b = np.mean(a,axis = 0)
+            # c = b/b.max()
+            # d = (c*255).astype(np.uint8)
+
+            # b = cv2.convertScaleAbs(running_avg)
+            # c = running_avg/running_avg.max()
+
+            cv2.imshow(window_name,b)
+
+            stacked_arrays = []
 
             start_time = time.time()
             frame_count = 0
