@@ -3,13 +3,16 @@ import os, time, datetime, subprocess
 import glob
 import json
 import piexif
-from PIL import Image
+from PIL import Image, ImageDraw
 import numpy as np
 from picamera2 import Picamera2, Preview
 # from pprint import pprint
 import matplotlib.pyplot as plt
 import cv2
+import serial
+import time
 import libcamera
+from pynput import keyboard
 
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
@@ -80,6 +83,131 @@ def s(tmp, bgr=False,f=False):
             tmp = tmp[:, :, ::-1]  # Convert BGR to RGB
         plt.imshow(tmp)
         plt.pause(0.000001)
+
+# Function to send G-code commands to the CNC machine
+def send_command(command):
+    global is_busy
+    try:
+        is_busy = True  # Mark as busy
+        cnc_serial.write(f"{command}\n".encode())
+        print(f"Sent: {command}")
+
+        # Wait for the machine's response
+        while True:
+            response = cnc_serial.readline().decode().strip()
+            if response:
+                print(f"Response: {response}")
+                if response.lower() == "ok":  # CNC typically sends "ok" when ready
+                    break
+                elif "error" in response.lower():  # Handle errors explicitly
+                    print(f"Error received: {response}")
+                    break
+        is_busy = False  # Mark as ready
+    except Exception as e:
+        is_busy = False  # Reset on error
+        print(f"Error sending command: {e}")
+
+# Define key press actions
+def on_press(key):
+    global STEP_SIZE, is_busy
+    if is_busy:
+        print("Machine is busy. Please wait.")
+        return  # Ignore keypresses if the machine is busy
+
+    try:
+        if key == keyboard.Key.up:
+            send_command(f"G91 G0 Y{STEP_SIZE}")  # Move Y-axis positive
+        elif key == keyboard.Key.down:
+            send_command(f"G91 G0 Y-{STEP_SIZE}")  # Move Y-axis negative
+        elif key == keyboard.Key.right:
+            send_command(f"G91 G0 X-{STEP_SIZE}")  # Move X-axis positive
+        elif key == keyboard.Key.left:
+            send_command(f"G91 G0 X{STEP_SIZE}")  # Move X-axis negative
+        elif hasattr(key, 'char') and key.char == ']':
+            send_command(f"G91 G0 Z{STEP_SIZE}")  # Move Z-axis positive
+        elif hasattr(key, 'char') and key.char == '[':
+            send_command(f"G91 G0 Z-{STEP_SIZE}")  # Move Z-axis negative
+        elif hasattr(key, 'char') and key.char == 'h':
+            send_command("$H")  # Home all axes
+        elif hasattr(key, 'char') and key.char == 'x':
+            send_command("$X")  # unlock
+        elif hasattr(key, 'char') and key.char == '+':
+            STEP_SIZE += STEP_INCREMENT
+            print(f"Step size increased to: {STEP_SIZE}")
+        elif hasattr(key, 'char') and key.char == '_':
+            STEP_SIZE = max(STEP_INCREMENT, STEP_SIZE - STEP_INCREMENT)
+            print(f"Step size decreased to: {STEP_SIZE}")
+        elif hasattr(key, 'char') and key.char == 'c':
+            get_position()  # Output current position
+    except AttributeError:
+        pass  # Ignore non-character kexhyxs
+
+# Define key release actions (optional, no action here)
+def on_release(key):
+    if key == keyboard.Key.esc:
+        # Stop listener and close the serial connection
+        print("Exiting...")
+        try:
+            cnc_serial.close()
+        except Exception as e:
+            print(f"Error closing serial connection: {e}")
+        return False
+   
+# Function to get the current machine position
+def get_position():
+    try:
+        cnc_serial.write(b"?\n")  # Send position query command
+        time.sleep(0.1)  # Allow some time for response
+        while True:
+            response = cnc_serial.readline().decode().strip()
+            if response:
+                print(f"Machine Position Response: {response}")
+                if "MPos:" in response:  # Parse machine position
+                    pos_data = response.split('|')[0].split(':')[1]
+                    x, y, z = map(float, pos_data.split(','))
+                    print(f"Current Position -> X: {x}, Y: {y}, Z: {z}")
+                    break
+    except Exception as e:
+        print(f"Error querying position: {e}")
+
+def create_crosshair_overlay(size):
+    overlay = Image.new("RGBA", size, (0, 0, 0, 0))  # Transparent image
+    draw = ImageDraw.Draw(overlay)
+
+    cx, cy = size[0] // 2, size[1] // 2
+    line_length = 100
+    color = (0, 255, 0, 255)  # Green with full opacity
+
+    # Horizontal line
+    draw.line((cx - line_length, cy, cx + line_length, cy), fill=color, width=1)
+    # Vertical line
+    draw.line((cx, cy - line_length, cx, cy + line_length), fill=color, width=1)
+
+    return np.array(overlay)  # 🔧 Convert to NumPy array before returning
+
+# Serial connection settings (modify according to your CNC machine's configuration)
+SERIAL_PORT = "/dev/ttyUSB0"  # Change to your CNC machine's port (e.g., '/dev/ttyUSB0' on Linux)
+BAUD_RATE = 115200    # Change to match your CNC machine's baud rate
+
+# Step size for each movement (in mm or machine-specific units)
+STEP_SIZE = 1.0
+STEP_INCREMENT = 0.1  # Increment/decrement value for adjusting step size
+
+# Flag to indicate if the machine is busy
+is_busy = False
+
+# Initialize the serial connection
+try:
+    cnc_serial = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    time.sleep(2)  # Allow time for the CNC to initialize
+    print(f"Connected to CNC machine on {SERIAL_PORT}")
+    # Optional: Set machine to relative positioning
+    cnc_serial.write(b"G91\n")
+    print("Use arrow keys to control the CNC machine. Press 'z'/'x' for Z-axis, 'h' to home, '+'/'-' to adjust step size, and 'Esc' to exit.")
+except Exception as ze:
+    print(f"Failed to connect to CNC machine: {ze}")
+    exit()
+
 
 if __name__ == "__main__":
 
@@ -159,6 +287,9 @@ if __name__ == "__main__":
 
     print('capturing data')
 
+    overlay_image = create_crosshair_overlay(image_WH)
+    picam2.set_overlay(overlay_image)
+
     # Variables for FPS calculation
     start_time = time.time()
     frame_count = 0
@@ -201,6 +332,8 @@ if __name__ == "__main__":
         if display_raw_data:
             # convert to uint8 for display ease
             display_img = (array_to_process >> 8).astype(np.uint8)
+            
+        
 
             if display_adjusted_color and (len(display_img.shape) > 2):
                 # convert back to uint16 for overflow 
@@ -214,6 +347,9 @@ if __name__ == "__main__":
             # check if the display image fits in the display window
             if img_shape != window_size and img_shape != window_size[0:2]:
                 display_img = cv2.resize(display_img,(window_size[1],window_size[0]))
+            print("display raw data")
+            
+        
 
         if center_crop:
             if not display_raw_data:
@@ -223,8 +359,10 @@ if __name__ == "__main__":
             small_side = min(img_shape[0:2])
             y1,y2 = int(center[0]-small_side/2), int(center[0]+small_side/2)
             x1,x2 = int(center[1]-small_side/2), int(center[1]+small_side/2)
-            display_img = display_img[y1:y2,x1:x2]            
-            
+            display_img = display_img[y1:y2,x1:x2]  
+            print("center crop")          
+
+
         if display_raw_data:
             cv2.imshow(window_name,display_img) # 
             cv2.waitKey(1)
@@ -237,13 +375,13 @@ if __name__ == "__main__":
         if elapsed_time >= fps_update_interval:
 
             fps = frame_count / elapsed_time
-            print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
+            #print(f"FPS: {fps:.2f} --- LOOP: {loop_counter:.0f}")
 
             start_time = time.time()
             frame_count = 0
 
+        with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
+            listener.join()
 
-
-
-
-
+    cnc_serial.close()
+    print("Serial connection closed.")

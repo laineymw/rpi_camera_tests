@@ -1,5 +1,18 @@
 import time, serial, cv2
 from picamera2 import Picamera2, Preview
+from focus import run_autofocus_at_current_position
+from concurrent.futures import ThreadPoolExecutor
+import os, time, datetime, subprocess
+import glob
+import json
+import piexif
+from PIL import Image
+import numpy as np
+from picamera2 import Picamera2, Preview
+# from pprint import pprint
+import matplotlib.pyplot as plt
+import cv2
+import libcamera
 
 class CNCController:
     def __init__(self, port, baudrate):
@@ -131,17 +144,6 @@ class CNCController:
     def close_connection(self):
         self.ser.close()
 
-from concurrent.futures import ThreadPoolExecutor
-import os, time, datetime, subprocess
-import glob
-import json
-import piexif
-from PIL import Image
-import numpy as np
-from picamera2 import Picamera2, Preview
-# from pprint import pprint
-import matplotlib.pyplot as plt
-import cv2
 
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
@@ -197,6 +199,7 @@ cam_config = picam2.create_preview_configuration(
     raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
     display = "main" ,queue=False ,buffer_count=1 #, SRGGB12_CSI2P
 )
+cam_config["transform"] = libcamera.Transform(hflip=1, vflip=0)
 picam2.configure(cam_config)
 
 
@@ -235,17 +238,48 @@ print("sending homing")
 controller.home_grbl()
 print("homing complete")
 position = dict()
-position['x_pos'] = -3
-position['y_pos'] = -35
-position['z_pos'] = -15
+position['x_pos'] = -5.3
+position['y_pos'] = -26 #-96
+position['z_pos'] = -13
 print ("moving to position")
 controller.move_XYZ(position)
 print("move complete")
+
+
 currentPosition = controller.get_current_position()
+run_autofocus_at_current_position(controller.ser, currentPosition, picam2, autofocus_min_max=[-1,1])
 print("getting raw array")
-array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
-array_to_process = process_raw(array_to_process, RGB= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+for i in range(10):
+    array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
+    array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+test = np.float32(array_to_process)/(2**16)
+test2 = (test*255).astype(np.uint8)
+cv2.imwrite('arrayImage.jpg', test2)
+time.sleep(3)
 
+'''
+position['x_pos'] = -3.3
+position['y_pos'] = -30
 
+print ("moving to position")
+controller.move_XYZ(position)
+print("move complete")
+time.sleep(3)
 
+position['x_pos'] = -163
+position['y_pos'] = -33
+
+print ("moving to position")
+controller.move_XYZ(position)
+print("move complete")
+time.sleep(3)
+
+position['x_pos'] = -163
+position['y_pos'] = -92
+
+print ("moving to position")
+controller.move_XYZ(position)
+print("move complete")
+time.sleep(3)
 print("eof")
+'''

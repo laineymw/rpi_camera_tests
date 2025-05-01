@@ -3,7 +3,7 @@
 "AeExposureMode" : 0,
 "AeFlickerMode" : 0,
 "AeMeteringMode" : 0,
-"AnalogueGain" : 7.88,
+"AnalogueGain" : 13.5,
 "AwbEnable" : false,
 "AwbMode" : 0,
 "Brightness" : 0.0,

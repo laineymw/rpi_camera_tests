@@ -31,9 +31,55 @@ def send_command(ser, command):
 def move_to(ser, x, y, z):
     send_command(ser, f'G0 X{x} Y{y} Z{z}')
 
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
+    if 'uint16' not in str(input_array.dtype):
+        input_array = input_array.view(np.uint16)
+        if mono:
+            return input_array
+
+    if R or G or B or G1 or G2 or RGB2:
+        RGB = False
+
+    if RGB: # return an rgb array
+        blue_pixels = input_array[0::2,0::2]
+        red_pixels = input_array[1::2,1::2]
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+
+        if rgb_or_bgr:
+            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
+        else:
+            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
+    if R: # just the red pixels
+        out = input_array[1::2,1::2]
+    if G: # just the green pixels (averaged)
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+    if G1: # just the green 1 pixels
+        out = input_array[0::2,1::2]
+    if G2: # just the green 2 pixels
+        out = input_array[1::2,0::2]
+    if B: # just blue pixels
+        out = input_array[0::2,0::2]
+    if RGB2: # 2x2 array of the pixel values
+        blue_pixels = input_array[0::2,0::2]
+        red_pixels = input_array[1::2,1::2]
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        a = np.concatenate((red_pixels,green1_pixels),axis = 0)
+        b = np.concatenate((green2_pixels,blue_pixels ), axis = 0)
+        out = np.concatenate((a,b),axis = 1)
+
+    return out
+
 
 # finds the z position that gets the best focus
-def run_autofocus_at_current_position(ser, starting_location,
+def run_autofocus_at_current_position(ser, starting_location, cam,
         autofocus_min_max=[1, -1], autofocus_delta_z=0.10, cap=None):
 
     print("FOCUSING CAMERA")
@@ -51,6 +97,7 @@ def run_autofocus_at_current_position(ser, starting_location,
     z_positions = []
     images = []
     uncalib_fscore = []
+    buffer_num = 10
 
     for counter, z_pos in enumerate(z_positions_start):
         this_location = starting_location.copy()
@@ -59,15 +106,17 @@ def run_autofocus_at_current_position(ser, starting_location,
             z_positions.append(z_pos)
 
             move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'])
-            # get rid of buffer for camera
-            for _ in range(10):
-                ret, frame = cap.read()
-            ret, frame = cap.read()
-            frame = frame[:,:,2]
-            images.append(frame)
-            temp = sq_grad(frame, thresh=thresh, offset=offset)
+            for i in range(buffer_num):
+                array_to_process = cam.capture_array("raw")#,"lores"]) #"main","lores","raw"
+                array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+                if i == buffer_num-1:
+                    test = np.float32(array_to_process)/(2**16)
+                    cv2.imwrite('focus_{counter}_Image.jpg', test)
+            #frame = frame[:,:,2]
+            images.append(array_to_process)
+            temp = sq_grad(array_to_process, thresh=thresh, offset=offset)
             uncalib_fscore.append(np.sum(temp))
-            camera_control.imshow_resize(frame_name="stream", frame=frame)
+            camera_control.imshow_resize(frame_name="stream", frame=array_to_process)
    
     output_dir = "autofocus_images"
     if not os.path.exists(output_dir):
@@ -82,12 +131,13 @@ def run_autofocus_at_current_position(ser, starting_location,
     this_location = starting_location.copy()
     this_location['z_pos'] = z_positions[assumed_focus_idx] + 0.05
     move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'])
-
-    s_camera_settings = get_settings.get_basic_camera_settings()
-    frame, cap = camera_control.capture_fluor_img_return_img(
-        s_camera_settings, cap=cap, return_cap=True, clear_N_images_from_buffer=2
-    )
-    camera_control.imshow_resize(frame_name="stream", frame=frame)
+    for i in range(buffer_num):
+        array_to_process = cam.capture_array("raw")#,"lores"]) #"main","lores","raw"
+        array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+        if i == buffer_num:
+            test = np.float32(array_to_process)/(2**16)
+            cv2.imwrite('focusImage.jpg', test)
+    camera_control.imshow_resize(frame_name="stream", frame=array_to_process)
     print('CAMERA FOCUSED')
     return z_pos, cap
 
