@@ -1,18 +1,9 @@
-import time, serial, cv2
-from picamera2 import Picamera2, Preview
-from focus import run_autofocus_at_current_position
-from concurrent.futures import ThreadPoolExecutor
-import os, time, datetime, subprocess
-import glob
-import json
-import piexif
-from PIL import Image
-import numpy as np
-from picamera2 import Picamera2, Preview
-# from pprint import pprint
-import matplotlib.pyplot as plt
 import cv2
-import libcamera
+import numpy as np
+import time
+import serial
+from picamera2 import Picamera2, Preview
+
 
 class CNCController:
     def __init__(self, port, baudrate):
@@ -87,6 +78,7 @@ class CNCController:
         position['x_pos'] = float(MPos[0])
         position['y_pos'] = float(MPos[1])
         position['z_pos'] = float(MPos[2])
+        print(f"GRBL status response: {out}")
 
         return position
    
@@ -145,141 +137,25 @@ class CNCController:
         self.ser.close()
 
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
-    if 'uint16' not in str(input_array.dtype):
-        input_array = input_array.view(np.uint16)
-        if mono:
-            return input_array
-
-    if R or G or B or G1 or G2 or RGB2:
-        RGB = False
-
-    if RGB: # return an rgb array
-        blue_pixels = input_array[0::2,0::2]
-        red_pixels = input_array[1::2,1::2]
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
-
-        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
-
-        if rgb_or_bgr:
-            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
-        else:
-            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
-    if R: # just the red pixels
-        out = input_array[1::2,1::2]
-    if G: # just the green pixels (averaged)
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
-
-        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
-    if G1: # just the green 1 pixels
-        out = input_array[0::2,1::2]
-    if G2: # just the green 2 pixels
-        out = input_array[1::2,0::2]
-    if B: # just blue pixels
-        out = input_array[0::2,0::2]
-    if RGB2: # 2x2 array of the pixel values
-        blue_pixels = input_array[0::2,0::2]
-        red_pixels = input_array[1::2,1::2]
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
-
-        a = np.concatenate((red_pixels,green1_pixels),axis = 0)
-        b = np.concatenate((green2_pixels,blue_pixels ), axis = 0)
-        out = np.concatenate((a,b),axis = 1)
-
-    return out
-
-picam2 = Picamera2()
-
-cam_config = picam2.create_preview_configuration(
-    main= {"format": "YUV420", "size": (480,360)},#(int(2028/2),int(1520/2))}, #(480,360)},
-    # lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
-    raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
-    display = "main" ,queue=False ,buffer_count=1 #, SRGGB12_CSI2P
-)
-cam_config["transform"] = libcamera.Transform(hflip=1, vflip=1)
-picam2.configure(cam_config)
-
-
-picam2.start_preview(Preview.QTGL)
-    
-
-# open the default image metadata and read in the settings as a sorted dict
-with open("/home/r/rpi_camera_tests/camera_settings.txt") as f:
-    default_image_settings = f.read()
-default_image_settings = json.loads(default_image_settings)
-
-# apply the default settings to the current camera
-for key in default_image_settings:
-    try:
-        picam2.set_controls({key:default_image_settings[key]})
-        print(key,default_image_settings[key])
-    except:
-        print('FAIL to set camera setting')
-        print(key,default_image_settings[key])
-
-# exp_time = 1/60
-# exp_time_us = int(round(exp_time * 1000000))
-# picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
-        
-picam2.start()
-time.sleep(0.5)
-picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
-time.sleep(0.5)
-
-print('capturing data')
-
-
+# Set up serial connection
 controller = CNCController(port="/dev/ttyUSB0", baudrate=115200)
 
-print("sending homing")
+controller.get_current_position()
+# Home Robot
+print("Homing robot...")
 controller.home_grbl()
-print("homing complete")
+controller.get_current_position()
+
 position = dict()
-position['x_pos'] = -163.4 #-3.8
-position['y_pos'] = -95.5 #-95.5
-position['z_pos'] = -13
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
-
-
-currentPosition = controller.get_current_position()
-run_autofocus_at_current_position(controller.ser, currentPosition, picam2, autofocus_min_max=[-1,1])
-print("getting raw array")
-for i in range(10):
-    array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
-    array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
-test = np.float32(array_to_process)/(2**16)
-test2 = (test*255).astype(np.uint8)
-cv2.imwrite('arrayImage.jpg', test2)
-time.sleep(3)
-
-'''
 position['x_pos'] = -4.3
 position['y_pos'] = -26
+position['z_pos'] = -13
 
 print ("moving to position")
 controller.move_XYZ(position)
 print("move complete")
 time.sleep(3)
+controller.get_current_position()
 
-position['x_pos'] = -164
-position['y_pos'] = -26
-
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
-time.sleep(3)
-
-position['x_pos'] = -164
-position['y_pos'] = -95.5
-
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
-time.sleep(3)
-print("eof")
-'''
+# Close the serial connection
+controller.close_connection()

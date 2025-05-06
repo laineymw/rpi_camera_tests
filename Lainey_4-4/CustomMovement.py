@@ -1,17 +1,10 @@
-import time, serial, cv2
-from picamera2 import Picamera2, Preview
-from focus import run_autofocus_at_current_position
-from concurrent.futures import ThreadPoolExecutor
-import os, time, datetime, subprocess
-import glob
-import json
-import piexif
-from PIL import Image
-import numpy as np
-from picamera2 import Picamera2, Preview
-# from pprint import pprint
-import matplotlib.pyplot as plt
 import cv2
+import numpy as np
+import time
+import serial
+import sys
+from focus import run_autofocus_at_current_position
+from picamera2 import Picamera2, Preview
 import libcamera
 
 class CNCController:
@@ -87,6 +80,7 @@ class CNCController:
         position['x_pos'] = float(MPos[0])
         position['y_pos'] = float(MPos[1])
         position['z_pos'] = float(MPos[2])
+        print(f"GRBL status response: {out}")
 
         return position
    
@@ -145,52 +139,69 @@ class CNCController:
         self.ser.close()
 
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
-    if 'uint16' not in str(input_array.dtype):
-        input_array = input_array.view(np.uint16)
-        if mono:
-            return input_array
+# Read the image
+image = cv2.imread("NewPlate.png")
 
-    if R or G or B or G1 or G2 or RGB2:
-        RGB = False
+# Define the real-world coordinates of the image corners
+real_world_coords = np.array([[-3.8, -95.5], [-164, -95.5], [-164, -26], [-4.3, -26]])
 
-    if RGB: # return an rgb array
-        blue_pixels = input_array[0::2,0::2]
-        red_pixels = input_array[1::2,1::2]
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
+# Define the corresponding pixel coordinates in the image
+#pixel_coords = np.array([[0, 0], [image.shape[1], 0], [image.shape[1], image.shape[0]], [0, image.shape[0]]])
+pixel_coords = np.array([[105, 210], [1216, 210], [1216, 696], [105, 696]])
 
-        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+# areas within camera range
+x_min, y_min = 105, 210
+x_max, y_max = 1216, 696
 
-        if rgb_or_bgr:
-            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
-        else:
-            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
-    if R: # just the red pixels
-        out = input_array[1::2,1::2]
-    if G: # just the green pixels (averaged)
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
+# Find the homography matrix to transform pixel coordinates to real-world coordinates
+H, _ = cv2.findHomography(pixel_coords, real_world_coords)
 
-        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
-    if G1: # just the green 1 pixels
-        out = input_array[0::2,1::2]
-    if G2: # just the green 2 pixels
-        out = input_array[1::2,0::2]
-    if B: # just blue pixels
-        out = input_array[0::2,0::2]
-    if RGB2: # 2x2 array of the pixel values
-        blue_pixels = input_array[0::2,0::2]
-        red_pixels = input_array[1::2,1::2]
-        green1_pixels = input_array[0::2,1::2]
-        green2_pixels = input_array[1::2,0::2]
+# Function to map pixel coordinates to real-world coordinates
+def pixel_to_real(x, y, H):
+    real_coords = H @ np.array([x, y, 1])
+    x1, y1 = real_coords[0] / real_coords[2], real_coords[1] / real_coords[2]
+    return x1, y1
 
-        a = np.concatenate((red_pixels,green1_pixels),axis = 0)
-        b = np.concatenate((green2_pixels,blue_pixels ), axis = 0)
-        out = np.concatenate((a,b),axis = 1)
+# Add instructions to the image
+instructions_text = "Drag cursor to create a box around imaging region. Press enter when done."
+font = cv2.FONT_HERSHEY_PLAIN
+font_scale = 1.5
+font_color = (0, 0, 0)
+thickness = 2
+text_size = cv2.getTextSize(instructions_text, font, font_scale, thickness)[0]
+text_x = (image.shape[1] - text_size[0]) // 2  # Center horizontally
+text_y = 130
+image_text = image.copy()
+cv2.putText(image_text, instructions_text, (text_x, text_y), font, font_scale, font_color, thickness)
 
-    return out
+# Display the image and let the user select an ROI
+roi = cv2.selectROI("Select ROI", image_text, fromCenter=False, showCrosshair=True)
 
+# Extract values from ROI (x, y, width, height)
+x, y, w, h = roi
+
+# Ensure selection is within the defined bounding box
+if x < x_min:
+    w = w - (x_min - x)
+    x = x_min
+if (x + w) > x_max:
+    w = x_max - x
+if y < y_min:
+    h = h - (y_min - y)
+    y = y_min
+if (y + h) > y_max:
+    h = y_max - y
+if (x > x_max or y > y_max or (x + w) < x_min or (y + h) < y_min):
+    print ("Selection was outside of bounds. Exiting Program.")
+    sys.exit()
+
+# Close all windows
+cv2.destroyAllWindows()
+
+# Set up serial connection
+controller = CNCController(port="/dev/ttyUSB0", baudrate=115200)
+
+# Set up camera
 picam2 = Picamera2()
 
 cam_config = picam2.create_preview_configuration(
@@ -203,83 +214,81 @@ cam_config["transform"] = libcamera.Transform(hflip=1, vflip=1)
 picam2.configure(cam_config)
 
 
-picam2.start_preview(Preview.QTGL)
-    
+#picam2.start_preview(Preview.DRM)  
 
-# open the default image metadata and read in the settings as a sorted dict
-with open("/home/r/rpi_camera_tests/camera_settings.txt") as f:
-    default_image_settings = f.read()
-default_image_settings = json.loads(default_image_settings)
+def go_to_corner (xCo, yCo):
+    # Extract the corner of the ROI
+    pixel_x, pixel_y = x, y
+    if xCo == 2:
+        pixel_x = x + w
+    if yCo == 3:
+        pixel_y = y + h
+    print(f"Selected ROI Pixel Coordinates: ({pixel_x}, {pixel_y})")
 
-# apply the default settings to the current camera
-for key in default_image_settings:
-    try:
-        picam2.set_controls({key:default_image_settings[key]})
-        print(key,default_image_settings[key])
-    except:
-        print('FAIL to set camera setting')
-        print(key,default_image_settings[key])
+    # Map the pixel coordinates of the corner to real-world coordinates
+    real_x,real_y = pixel_to_real(pixel_x, pixel_y, H)
+    print(f"Mapped Real-World Coordinates: ({real_x:.2f}, {real_y:.2f})")
 
-# exp_time = 1/60
-# exp_time_us = int(round(exp_time * 1000000))
-# picam2.set_controls({"ExposureTime": exp_time_us}) # overwrite the exposre for testing
-        
-picam2.start()
-time.sleep(0.5)
-picam2.title_fields = ["ExposureTime","AnalogueGain","DigitalGain"] # v"ExposureTime","AnalogueGain","DigitalGain",
-time.sleep(0.5)
+   
+    # Move the robot to the real-world coordinates of the selected ROI's corner
+    position = dict()
+    position['x_pos'] = real_x
+    position['y_pos'] = real_y
+    position['z_pos'] = -13
+    print(f"Moving to X: {real_x:.2f}, Y: {real_y:.2f}, Z: {-13}")
+    controller.move_XYZ(position)
+    print("moved")
 
-print('capturing data')
+    #autofocus to find z
+    this_well_coords = controller.get_current_position()
+    print("I think I am at")
+    print(this_well_coords)
+    print("now focus z")
+    z_height, cap = run_autofocus_at_current_position(controller.ser, this_well_coords, picam2, autofocus_min_max=[-1,1])
+    print ("z focused")
 
+def go_to_center ():
+    # Extract the center of the ROI
+    pixel_x = x + w/2
+    pixel_y = y + h/2
+    print(f"Selected ROI Pixel Coordinates: ({pixel_x}, {pixel_y})")
+   
+    # Map the pixel coordinates of the center to real-world coordinates
+    real_x,real_y = pixel_to_real(pixel_x, pixel_y, H)
+    print(f"Mapped Real-World Coordinates: ({real_x:.2f}, {real_y:.2f})")
 
-controller = CNCController(port="/dev/ttyUSB0", baudrate=115200)
+    # Move the robot to the real-world coordinates of the selected ROI's corner
+    position = dict()
+    position['x_pos'] = real_x
+    position['y_pos'] = real_y
+    position['z_pos'] = -13
 
-print("sending homing")
+    print(f"Moving to X: {real_x:.2f}, Y: {real_y:.2f}, Z: {position['z_pos']}")
+    controller.move_XYZ(position)
+
+controller.get_current_position()
+# Home Robot
+print("Homing robot...")
 controller.home_grbl()
-print("homing complete")
-position = dict()
-position['x_pos'] = -163.4 #-3.8
-position['y_pos'] = -95.5 #-95.5
-position['z_pos'] = -13
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
 
-
-currentPosition = controller.get_current_position()
-run_autofocus_at_current_position(controller.ser, currentPosition, picam2, autofocus_min_max=[-1,1])
-print("getting raw array")
-for i in range(10):
-    array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
-    array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
-test = np.float32(array_to_process)/(2**16)
-test2 = (test*255).astype(np.uint8)
-cv2.imwrite('arrayImage.jpg', test2)
+print ("corner 1 start")
+go_to_corner(0,1)
+print ("corner 1 finish")
 time.sleep(3)
 
-'''
-position['x_pos'] = -4.3
-position['y_pos'] = -26
-
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
+go_to_corner(2,1)
+print ("corner 2")
 time.sleep(3)
 
-position['x_pos'] = -164
-position['y_pos'] = -26
-
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
+go_to_corner(2,3)
+print ("corner 3")
 time.sleep(3)
 
-position['x_pos'] = -164
-position['y_pos'] = -95.5
-
-print ("moving to position")
-controller.move_XYZ(position)
-print("move complete")
+go_to_corner(0,3)
+print ("corner 4")
 time.sleep(3)
-print("eof")
-'''
+
+go_to_center()
+
+# Close the serial connection
+controller.close_connection()

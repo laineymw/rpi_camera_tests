@@ -232,7 +232,7 @@ if __name__ == "__main__":
         raw={"format": "SRGGB12", "size": (2028,1520)},#(4056,3040)},(2028,1520),(2028,1080)
         display = "main" ,queue=False ,buffer_count=4 #, SRGGB12_CSI2P
     )
-    cam_config["transform"] = libcamera.Transform(hflip=1, vflip=0)
+    cam_config["transform"] = libcamera.Transform(hflip=1, vflip=1)
     picam2.configure(cam_config)
 
     if use_preview:

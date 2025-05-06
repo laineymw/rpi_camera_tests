@@ -104,7 +104,8 @@ def run_autofocus_at_current_position(ser, starting_location, cam,
         this_location['z_pos'] = z_pos
         if z_limit[0] > z_pos > z_limit[1]:
             z_positions.append(z_pos)
-
+            print("this location")
+            print(this_location)
             move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'])
             for i in range(buffer_num):
                 array_to_process = cam.capture_array("raw")#,"lores"]) #"main","lores","raw"
