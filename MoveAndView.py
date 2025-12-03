@@ -13,6 +13,7 @@ import serial
 import time
 import libcamera
 from pynput import keyboard
+import RPi.GPIO as GPIO
 
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
@@ -322,6 +323,10 @@ if __name__ == "__main__":
     # scaler = 1/16384 # 2**14
     scaler = 1/(2**16)
 
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(26, GPIO.OUT)
+    GPIO.output(26, GPIO.HIGH)
+
     while True:
 
         array_to_process = picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
@@ -382,6 +387,6 @@ if __name__ == "__main__":
 
         with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
             listener.join()
-
+    GPIO.cleanup()
     cnc_serial.close()
     print("Serial connection closed.")

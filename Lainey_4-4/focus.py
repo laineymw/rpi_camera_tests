@@ -8,11 +8,14 @@ import camera_control
 # from tkinter import Tk
 # from movement import simple_stream
 
-def send_command(ser, command):
+def send_command(ser, command, verbose = True):
     try:
         # Send the command to the CNC
-        ser.write(f"{command}\n".encode())
+        if verbose:
+            ser.write(f"{command}\n".encode())
         print(f"Sent: {command}")
+
+        time.sleep(0.1)
 
         # Wait for an "OK" response from the CNC
         while True:
@@ -28,8 +31,48 @@ def send_command(ser, command):
     except Exception as e:
         print(f"Error sending command: {e}")
 
-def move_to(ser, x, y, z):
-    send_command(ser, f'G0 X{x} Y{y} Z{z}')
+def send_command_v2(ser,command, verbose = True):
+    try:
+        # Send the command to the CNC
+        ser.write(f"{command}\n".encode())
+        if verbose:
+            print(f"Sent: {command}")
+
+        time.sleep(0.1)
+
+        # make sure that its actually done moving 
+        if ('$X' not in command) and ('$$' not in command) and ('?' not in command):
+            idle_counter = 0
+            time.sleep(0.025)
+            while True:
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+                time.sleep(0.025)
+                command = str.encode("?"+ "\n")
+                ser.write(command)
+                time.sleep(0.025)
+                grbl_out = ser.readline().decode().strip()
+                grbl_response = grbl_out.strip()
+
+                if 'ok' not in grbl_response.lower():  
+                    if 'idle' in grbl_response.lower():
+                        idle_counter += 1
+                    else:
+                        if grbl_response != '':
+                            pass
+                            # print(grbl_response)
+                if idle_counter == 1 or idle_counter == 2:
+                    # print(grbl_response)
+                    pass
+                if idle_counter > 3:
+                    break
+                if 'alarm' in grbl_response.lower():
+                    raise ValueError(grbl_response)
+    except Exception as e:
+        print(f"Error sending command: {e}")
+
+def move_to(ser, x, y, z, verbose = True):
+    send_command_v2(ser, f'G0 X{x} Y{y} Z{z}', verbose)
 
 def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
     if 'uint16' not in str(input_array.dtype):
@@ -80,7 +123,7 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
 
 # finds the z position that gets the best focus
 def run_autofocus_at_current_position(ser, starting_location, cam,
-        autofocus_min_max=[1, -1], autofocus_delta_z=0.10, cap=None):
+        autofocus_min_max=[1, -1], autofocus_delta_z=0.10, cap=None, verbose = True):
 
     print("FOCUSING CAMERA")
     autofocus_steps = int(abs(np.diff(autofocus_min_max) / autofocus_delta_z)) + 1
@@ -97,16 +140,17 @@ def run_autofocus_at_current_position(ser, starting_location, cam,
     z_positions = []
     images = []
     uncalib_fscore = []
-    buffer_num = 10
+    buffer_num = 5 # this used to be 10
 
     for counter, z_pos in enumerate(z_positions_start):
         this_location = starting_location.copy()
         this_location['z_pos'] = z_pos
         if z_limit[0] > z_pos > z_limit[1]:
             z_positions.append(z_pos)
-            print("this location")
-            print(this_location)
-            move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'])
+            if verbose:
+                print("this location")
+                print(this_location)
+            move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'], verbose)
             for i in range(buffer_num):
                 array_to_process = cam.capture_array("raw")#,"lores"]) #"main","lores","raw"
                 array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
@@ -117,30 +161,42 @@ def run_autofocus_at_current_position(ser, starting_location, cam,
             images.append(array_to_process)
             temp = sq_grad(array_to_process, thresh=thresh, offset=offset)
             uncalib_fscore.append(np.sum(temp))
-            camera_control.imshow_resize(frame_name="stream", frame=array_to_process)
-   
-    output_dir = "autofocus_images"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
 
-    for i, img in enumerate(images):
-        img_path = os.path.join(output_dir, f"image_{i}.png")
-        cv2.imwrite(img_path, img)
+            if counter == 0:
+                maxVal = np.max(array_to_process) 
+            im_to_show = array_to_process.astype(np.float32) / maxVal
+            im_to_show = np.clip(im_to_show, 0.0, 1.0)
+            im_to_show = (im_to_show * 255).astype(np.uint8)
+            camera_control.imshow_resize(frame_name="stream", frame=im_to_show,move_to = [1920-960,100],
+                                         resize_size = [960,720])
+
+   
+    # output_dir = "autofocus_images"
+    # if not os.path.exists(output_dir):
+    #     os.makedirs(output_dir)
+
+    # for i, img in enumerate(images):
+    #     img_path = os.path.join(output_dir, f"image_{i}.png")
+    #     cv2.imwrite(img_path, img)
+
+    del images # this deletes the stack of images
 
     assumed_focus_idx = np.argmax(uncalib_fscore)
     z_pos = z_positions[assumed_focus_idx]  # for the final output
     this_location = starting_location.copy()
     this_location['z_pos'] = z_positions[assumed_focus_idx] + 0.05
-    move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'])
+    move_to(ser, this_location['x_pos'], this_location['y_pos'], this_location['z_pos'], verbose)
     for i in range(buffer_num):
         array_to_process = cam.capture_array("raw")#,"lores"]) #"main","lores","raw"
         array_to_process = process_raw(array_to_process, G= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
-        if i == buffer_num:
-            test = np.float32(array_to_process)/(2**16)
-            cv2.imwrite('focusImage.jpg', test)
-    camera_control.imshow_resize(frame_name="stream", frame=array_to_process)
-    print('CAMERA FOCUSED')
-    return z_pos, cap
+        # if i == buffer_num:
+        #     test = np.float32(array_to_process)/(2**16)
+        #     cv2.imwrite('focusImage.jpg', test) 
+    camera_control.imshow_resize(frame_name="stream", frame=array_to_process,move_to = [1920-960,100],
+                                 resize_size = [960,720])
+    if verbose:
+        print('CAMERA FOCUSED')
+    return z_pos, cap, uncalib_fscore, z_positions#cam
 
 
 # function used within autofocus
