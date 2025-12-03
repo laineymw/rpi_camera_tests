@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import cv2
 import libcamera
 
-def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False, average_green = False):
     if 'uint16' not in str(input_array.dtype):
         input_array = input_array.view(np.uint16)
         if mono:
@@ -26,19 +26,28 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+        if average_green:
+            new_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+        else:
+            new_green = np.add(green1_pixels, green2_pixels, dtype=np.uint32)
+            new_green = np.clip(new_green,a_min = 0, a_max = ((2**16)-1)).astype(np.uint16)
 
         if rgb_or_bgr:
-            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
+            out = np.asarray([red_pixels,new_green,blue_pixels]).transpose(1,2,0)
         else:
-            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
+            out = np.asarray([blue_pixels,new_green,red_pixels]).transpose(1,2,0)
     if R: # just the red pixels
         out = input_array[1::2,1::2]
     if G: # just the green pixels (averaged)
         green1_pixels = input_array[0::2,1::2]
         green2_pixels = input_array[1::2,0::2]
 
-        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+        if average_green:
+            out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+        else:
+            out = np.add(green1_pixels, green2_pixels, dtype=np.uint32)
+            out = np.clip(out,a_min = 0, a_max = ((2**16)-1)).astype(np.uint16)
+    
     if G1: # just the green 1 pixels
         out = input_array[0::2,1::2]
     if G2: # just the green 2 pixels
