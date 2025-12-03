@@ -26,8 +26,10 @@ def imshow_resize(frame_name = "img", frame = 0, resize_size = [640,480], defaul
             cv2.setWindowProperty(frame_name, cv2.WND_PROP_TOPMOST, 1)
         if use_waitkey:
             cv2.waitKey(1)
-        if frame_name == "stream":
-            move_to = [800,300]
+        # if frame_name == "stream":
+        #     move_to = [1920-640,1]
+        #     cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
+        if move_to:
             cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
         else:
             cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
@@ -40,8 +42,10 @@ def imshow_resize(frame_name = "img", frame = 0, resize_size = [640,480], defaul
             cv2.setWindowProperty(frame_name, cv2.WND_PROP_TOPMOST, 1)
         if use_waitkey:
             cv2.waitKey(1)
-        if frame_name == "stream":
-            move_to = [700,300]
+        # if frame_name == "stream":
+        #     move_to = [1920-640,1]
+        #     cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
+        if move_to:
             cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
         else:
             cv2.moveWindow(frame_name,move_to[0]-resize_size[0],move_to[1])
