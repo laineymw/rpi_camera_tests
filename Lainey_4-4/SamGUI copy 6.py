@@ -4,7 +4,24 @@
 # add time stamp get position to worker thread
 # make the delay after pressing button less long
 
-import sys, time, serial, RPi.GPIO as GPIO, cv2
+# make take picture do raw image
+# make it center after homing
+
+###################################################
+#   Log of what I did Thursday 3/5/26
+#   Made wait for completion only need 1 idle
+#   Tried to break it, fine as long as dont hit limit switch
+#   Sam wants to be able to go to one spot and take picture
+#   Tried to add a log of everything sent to and recieved from GRBL
+#   It took a long time and went badly
+#   At the end of the day I got rid of most of the log structure
+#   Now the log is there but does not populate
+#   Todo: make log populate (maybe not through CNC controller send command definition because that went wrong)
+#   Todo: do what Sam originally wanted and make it take a picture at a spot
+###################################################
+
+
+import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback
 from PyQt6.QtGui import QTextCursor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -25,8 +42,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 
 class CNCController:
-    def __init__(self, port, baudrate):
-        import re
+    def __init__(self, port, baudrate, log_func=None):
         self.ser = serial.Serial(port, baudrate, timeout=1)
         time.sleep(2)
         
@@ -65,6 +81,8 @@ class CNCController:
     def send_command(self, command):
         #self.ser.reset_input_buffer() # flush the input and the output
         #self.ser.reset_output_buffer()
+        print(f"> {command.strip()}")
+
         time.sleep(0.025)
         self.ser.write(command.encode())
         time.sleep(0.025)
@@ -76,6 +94,7 @@ class CNCController:
             response = self.ser.readline().decode().strip()
             time.sleep(0.001)
             out.append(response)
+            print (f"< {response}")
             if 'error' in response.lower():
                 print('error--------------------------------------------------')
             if 'ok' in response:
@@ -180,7 +199,7 @@ class CNCWorker(QThread):
                 self.cnc.move_XYZ(self.command_data)
 
             elif self.command_type == "home":
-                self.cnc.home_grbl()   # ✅ FIXED
+                self.cnc.home_grbl()
 
         except Exception as e:
             print("THREAD ERROR:", e)
@@ -256,6 +275,7 @@ class ModernMainWindow(QMainWindow):
             self.print_with_timestamp("Homing complete.")
 
         except Exception as e:
+            traceback.print_exc()
             self.print_with_timestamp(f"Failed to connect or home: {e}")
             self.cnc = None
 
@@ -265,7 +285,6 @@ class ModernMainWindow(QMainWindow):
         self.BAUD_RATE = 115200
         self.settings_path = "/home/r/rpi_camera_tests/camera_settings.txt"
         self.cnc = None
-        self.initialize_serial_connection()
         self.robot_busy = False
 
         GPIO.setmode(GPIO.BCM)
@@ -343,19 +362,22 @@ class ModernMainWindow(QMainWindow):
         main_layout.setSpacing(15)
         main_layout.setContentsMargins(20, 20, 20, 20)
         left_layout = QVBoxLayout()
+        right_layout = QVBoxLayout()
         main_layout.addLayout(left_layout, 1)
+        main_layout.addLayout(right_layout, 5)
         
 
-
-        # camera
+        # Camera
         self.camera_label = QLabel()
         self.camera_label.setMinimumSize(400, 300)
         self.camera_label.setStyleSheet("background-color: black;")
-        main_layout.addWidget(self.camera_label, 5)
+
         self.camera_label.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding
         )
+
+        right_layout.addWidget(self.camera_label, 4)
        
         # Header
         header_frame = QFrame()
@@ -425,6 +447,9 @@ class ModernMainWindow(QMainWindow):
         self.home_button = QPushButton("Home CNC")
         self.home_button.clicked.connect(self.safe_home)
 
+        self.picture_button = QPushButton("Take Pic")
+        self.picture_button.clicked.connect(self.take_pic)
+
         self.step = QDoubleSpinBox()
         self.step.setRange(0.01, 100)
         self.step.setValue(1.0)
@@ -434,7 +459,7 @@ class ModernMainWindow(QMainWindow):
         button_layout.addWidget(self.input_button)
         button_layout.addWidget(self.center_button)
         button_layout.addWidget(self.home_button)
-        button_layout.addWidget(self.step)
+        button_layout.addWidget(self.picture_button)
         button_layout.addStretch()
        
         left_layout.addWidget(button_frame)
@@ -478,6 +503,7 @@ class ModernMainWindow(QMainWindow):
         '''
 
         toggle_layout.addLayout(toggle1_layout)
+        toggle_layout.addWidget(self.step)
         #toggle_layout.addLayout(toggle2_layout)
         #toggle_layout.addLayout(toggle3_layout)
         toggle_layout.addStretch()
@@ -524,6 +550,7 @@ class ModernMainWindow(QMainWindow):
         left_layout.addWidget(arrow_frame)
 
         # Initialize stream redirector
+        self.initialize_serial_connection()
         self.stdout_redirector = StreamRedirector()
         self.stdout_redirector.text_written.connect(self.append_log)
 
@@ -599,6 +626,21 @@ class ModernMainWindow(QMainWindow):
         thread.finished.connect(thread.deleteLater)
 
         thread.start()
+
+    def take_pic(self):
+        try:
+            frame = self.camera_thread.picam2.capture_array()
+
+            # create timestamp filename
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"image_{timestamp}.jpg"
+
+            cv2.imwrite(filename, frame)
+
+            self.print_with_timestamp(f"Saved image: {filename}")
+
+        except Exception as e:
+            self.print_with_timestamp(f"Camera error: {e}")
 
     def print_with_timestamp(self,input_string):
 
@@ -689,9 +731,9 @@ class ModernMainWindow(QMainWindow):
         self.print_with_timestamp("Moving to Center")
 
         pos = {
-            "x_pos": -5,
-            "y_pos": -5,
-            "z_pos": -5
+            "x_pos": -81,
+            "y_pos": -67,
+            "z_pos": -17
         }
 
         thread = CNCWorker(self.cnc, "jog", pos)
