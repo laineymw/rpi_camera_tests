@@ -20,8 +20,10 @@
 #   Todo: do what Sam originally wanted and make it take a picture at a spot
 ###################################################
 
+# add sliders for exposure time, shutterspeed, and gain
+# research the difference between them
 
-import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback
+import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback, numpy as np
 from PyQt6.QtGui import QTextCursor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +42,53 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
+
+
+def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = False, RGB = True, RGB2 = False, rgb_or_bgr = True, mono = False):
+    if 'uint16' not in str(input_array.dtype):
+        input_array = input_array.view(np.uint16)
+        if mono:
+            return input_array
+
+    if R or G or B or G1 or G2 or RGB2:
+        RGB = False
+
+    if RGB: # return an rgb array
+        blue_pixels = input_array[0::2,0::2]
+        red_pixels = input_array[1::2,1::2]
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        avg_green = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+
+        if rgb_or_bgr:
+            out = np.asarray([red_pixels,avg_green,blue_pixels]).transpose(1,2,0)
+        else:
+            out = np.asarray([blue_pixels,avg_green,red_pixels]).transpose(1,2,0)
+    if R: # just the red pixels
+        out = input_array[1::2,1::2]
+    if G: # just the green pixels (averaged)
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        out = ((green1_pixels&green2_pixels) + (green1_pixels^green2_pixels)/2).astype(np.uint16)
+    if G1: # just the green 1 pixels
+        out = input_array[0::2,1::2]
+    if G2: # just the green 2 pixels
+        out = input_array[1::2,0::2]
+    if B: # just blue pixels
+        out = input_array[0::2,0::2]
+    if RGB2: # 2x2 array of the pixel values
+        blue_pixels = input_array[0::2,0::2]
+        red_pixels = input_array[1::2,1::2]
+        green1_pixels = input_array[0::2,1::2]
+        green2_pixels = input_array[1::2,0::2]
+
+        a = np.concatenate((red_pixels,green1_pixels),axis = 0)
+        b = np.concatenate((green2_pixels,blue_pixels ), axis = 0)
+        out = np.concatenate((a,b),axis = 1)
+
+    return out
 
 class CNCController:
     def __init__(self, port, baudrate, log_func=None):
@@ -213,13 +262,19 @@ class CameraWorker(QThread):
 
         from picamera2 import Picamera2
         self.picam2 = Picamera2()
-        config = self.picam2.create_preview_configuration()
-        self.picam2.configure(config)
+        # config = self.picam2.create_preview_configuration()
+        cam_config = self.picam2.create_preview_configuration(
+            main= {"format": "XBGR8888", "size": (480,360)},#(int(2028/2),int(1520/2))}, #(480,360)},
+            # lores = {"format": "XBGR8888","size":(480,360)},# (507,380),(480,360)
+            raw={"format": "SRGGB12", "size": (4056,3040)},#(4056,3040)},(2028,1520),(2028,1080)
+            display = "main" ,queue=False ,buffer_count=4 #, SRGGB12_CSI2P
+        )
+        self.picam2.configure(cam_config)
         self.picam2.start()
 
     def run(self):
         while self.running:
-            frame = self.picam2.capture_array()
+            frame = self.picam2.capture_array("main")
 
             # Convert to RGB (OpenCV uses BGR)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -629,15 +684,52 @@ class ModernMainWindow(QMainWindow):
 
     def take_pic(self):
         try:
-            frame = self.camera_thread.picam2.capture_array()
 
-            # create timestamp filename
+            # capture raw
+
+            array_to_process = self.camera_thread.picam2.capture_array("raw")#,"lores"]) #"main","lores","raw"
+            raw_data = process_raw(array_to_process, RGB= True, rgb_or_bgr=False)#, G = True) # RGB = True, 
+
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"image_{timestamp}.jpg"
+            base_name = f"img_{timestamp}"
 
-            cv2.imwrite(filename, frame)
+            # save raw
+            tiff_name = f"{base_name}.tiff"
+            cv2.imwrite(tiff_name, raw_data)
 
-            self.print_with_timestamp(f"Saved image: {filename}")
+            # uint16 -> uint8
+            #raw_8bit = (raw_data // 256).astype(np.uint8)
+            raw_8bit = (raw_data / raw_data.max() * 255).astype(np.uint8)
+
+            # save jpeg
+            jpg_name = f"{base_name}.jpg"
+            cv2.imwrite(jpg_name, raw_8bit)
+
+            '''
+            # Convert 12-bit to 8-bit (Vectorized NumPy operation)
+            raw_8bit = (raw_data >> 8).astype(np.uint8)
+
+            # Use OpenCV for faster processing
+            rgb_image = cv2.cvtColor(raw_8bit, cv2.COLOR_BAYER_RG2RGB)
+
+            # Convert RGB888 → RGB8888 (QTGL requires 4 channels)
+            rgba_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2RGBA)
+
+            # save jpeg
+            jpg_name = f"{base_name}.jpg"
+            cv2.imwrite(jpg_name, rgba_image)
+            '''
+            # Temporary save for reference
+            # frame = self.camera_thread.picam2.capture_array("main")
+            # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # filename = f"image_{timestamp}.jpg"
+
+            # cv2.imwrite(filename, frame)
+            #####
+
+            self.print_with_timestamp(f"Saved: {tiff_name} + {jpg_name}")
 
         except Exception as e:
             self.print_with_timestamp(f"Camera error: {e}")
