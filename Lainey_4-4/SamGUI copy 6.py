@@ -1,29 +1,12 @@
 # add ? button that gets position
 # make arrowkeys work
-# maybe make example autofocus or take picture
-# add time stamp get position to worker thread
-# make the delay after pressing button less long
+# make sliders update even when in automode
+# add spots to type in exact gain and exposure values
+# maybe put exposure values into fractions of seconds
+# turn off auto white balance
+# system locks when you hit a limit switch
 
-# make take picture do raw image
-# make it center after homing
-
-###################################################
-#   Log of what I did Thursday 3/5/26
-#   Made wait for completion only need 1 idle
-#   Tried to break it, fine as long as dont hit limit switch
-#   Sam wants to be able to go to one spot and take picture
-#   Tried to add a log of everything sent to and recieved from GRBL
-#   It took a long time and went badly
-#   At the end of the day I got rid of most of the log structure
-#   Now the log is there but does not populate
-#   Todo: make log populate (maybe not through CNC controller send command definition because that went wrong)
-#   Todo: do what Sam originally wanted and make it take a picture at a spot
-###################################################
-
-# add sliders for exposure time, shutterspeed, and gain
-# research the difference between them
-
-import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback, numpy as np
+import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback, numpy as np, atexit, math
 from PyQt6.QtGui import QTextCursor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +23,9 @@ from PyQt6.QtWidgets import (
     QFrame,
     QDoubleSpinBox, 
     QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 
@@ -89,6 +75,16 @@ def process_raw(input_array,R = False, G = False, G1 = False, G2 = False, B = Fa
         out = np.concatenate((a,b),axis = 1)
 
     return out
+
+def cleanup_gpio():
+    try:
+        GPIO.output(26, GPIO.LOW)
+        GPIO.cleanup()
+        print("GPIO cleaned on exit")
+    except:
+        pass
+
+atexit.register(cleanup_gpio)
 
 class CNCController:
     def __init__(self, port, baudrate, log_func=None):
@@ -227,9 +223,6 @@ class CNCController:
         if self.cnc is not None:
             self.cnc.close_connection()
 
-        GPIO.output(26, GPIO.LOW)
-        GPIO.cleanup()
-
         if hasattr(self, "camera_thread"):
             self.camera_thread.stop()
 
@@ -294,7 +287,10 @@ class CameraWorker(QThread):
 
     def stop(self):
         self.running = False
-        self.picam2.stop()
+        try:
+            self.picam2.stop()
+        except:
+            pass
         self.quit()
         self.wait()
 
@@ -341,6 +337,10 @@ class ModernMainWindow(QMainWindow):
         self.settings_path = "/home/r/rpi_camera_tests/camera_settings.txt"
         self.cnc = None
         self.robot_busy = False
+
+        self.auto_update_timer = QTimer()
+        self.auto_update_timer.timeout.connect(self.update_auto_values)
+        self.auto_update_timer.start(200)
 
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
@@ -479,7 +479,55 @@ class ModernMainWindow(QMainWindow):
             }
         """)
        
-        left_layout.addWidget(self.log_text)
+        # Create container for log + exposure controls
+        log_container = QHBoxLayout()
+
+        # ---- LOG ----
+        log_container.addWidget(self.log_text, 4)
+
+        # ---- EXPOSURE CONTROL PANEL ----
+        exposure_frame = QFrame()
+        exposure_layout = QVBoxLayout(exposure_frame)
+        exposure_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Label
+        self.exposure_label = QLabel("Exposure")
+        self.exposure_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Toggle (Auto Exposure)
+        self.exposure_toggle = QCheckBox("Auto")
+        self.exposure_toggle.setChecked(True)
+        self.exposure_toggle.stateChanged.connect(self.toggle_exposure_mode)
+
+        # Exposure table
+        self.exposure_values = [1/(2**i) for i in range(1, 11)]  
+        # [1/2, 1/4, ..., 1/1024]
+        self.exposure_us_values = [int(s * 1_000_000) for s in self.exposure_values]
+
+        # Vertical slider
+        self.exposure_slider = QSlider(Qt.Orientation.Vertical)
+        self.exposure_slider.setMinimum(0)
+        self.exposure_slider.setMaximum(len(self.exposure_us_values) - 1)
+        self.exposure_slider.setValue(4) 
+        self.exposure_slider.setEnabled(False)   # disabled when auto is ON
+        self.exposure_slider.valueChanged.connect(self.update_exposure)
+
+        self.exposure_input = QSpinBox()
+        self.exposure_input.setRange(1, 1_000_000)  # microseconds
+        self.exposure_input.setSuffix(" us")
+        self.exposure_input.setEnabled(False)
+
+        self.exposure_input.valueChanged.connect(self.set_exposure_from_input)
+
+        # Add to layout
+        exposure_layout.addWidget(self.exposure_label)
+        exposure_layout.addWidget(self.exposure_toggle)
+        exposure_layout.addWidget(self.exposure_slider)
+        exposure_layout.addWidget(self.exposure_input)
+
+        log_container.addWidget(exposure_frame, 1)
+        left_layout.addLayout(log_container)
+
        
         # Control buttons
         button_frame = QFrame()
@@ -535,30 +583,41 @@ class ModernMainWindow(QMainWindow):
         toggle1_layout.addWidget(self.toggle_switch1)
         toggle1_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
        
-        '''
-        # Toggle Option 2
-        toggle2_layout = QVBoxLayout()
-        self.toggle_label2 = QLabel("Option 2:")
-        self.toggle_switch2 = QCheckBox()
-        self.toggle_switch2.setChecked(False)
-        self.toggle_switch2.stateChanged.connect(self.toggle_option2)
-        toggle2_layout.addWidget(self.toggle_label2)
-        toggle2_layout.addWidget(self.toggle_switch2)
-        toggle2_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-       
-        # Toggle Option 3
-        toggle3_layout = QVBoxLayout()
-        self.toggle_label3 = QLabel("Option 3:")
-        self.toggle_switch3 = QCheckBox()
-        self.toggle_switch3.setChecked(False)
-        self.toggle_switch3.stateChanged.connect(self.toggle_option3)
-        toggle3_layout.addWidget(self.toggle_label3)
-        toggle3_layout.addWidget(self.toggle_switch3)
-        toggle3_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        '''
+        # Analog Gain Slider
+        self.gain_label = QLabel("Analog Gain: 1.0")
+
+        self.gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.gain_slider.setMinimum(0)
+        self.gain_slider.setMaximum(51)
+        self.gain_slider.setValue(0)
+
+        self.gain_slider.valueChanged.connect(self.update_gain)
 
         toggle_layout.addLayout(toggle1_layout)
-        toggle_layout.addWidget(self.step)
+
+        self.gain_input = QDoubleSpinBox()
+        self.gain_input.setRange(0.0, 50.0)  # dB
+        self.gain_input.setSingleStep(0.5)
+        self.gain_input.setSuffix(" dB")
+        self.gain_input.setEnabled(False)
+
+        self.gain_input.valueChanged.connect(self.set_gain_from_input)
+
+        toggle_layout.addWidget(self.gain_input)
+
+        # Step size control
+        step_layout = QVBoxLayout()
+
+        self.step_label = QLabel("Step Size")
+        self.step_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        step_layout.addWidget(self.step_label)
+        step_layout.addWidget(self.step)
+
+        toggle_layout.addLayout(step_layout)
+
+        toggle_layout.addWidget(self.gain_label)
+        toggle_layout.addWidget(self.gain_slider)
         #toggle_layout.addLayout(toggle2_layout)
         #toggle_layout.addLayout(toggle3_layout)
         toggle_layout.addStretch()
@@ -635,6 +694,198 @@ class ModernMainWindow(QMainWindow):
         )
         self.camera_label.setPixmap(scaled)
     
+    def format_exposure(self, exposure_us):
+        if exposure_us is None or exposure_us <= 0:
+            return "?"
+
+        seconds = exposure_us / 1_000_000
+
+        if seconds >= 1:
+            # Show whole seconds (or decimal if needed)
+            if seconds.is_integer():
+                return f"{int(seconds)}"
+            else:
+                return f"{seconds:.1f}"
+        else:
+            # Convert to fraction 1/x
+            denom = round(1 / seconds)
+
+            # Clamp to reasonable camera-style values
+            return f"1/{denom}"
+
+    def get_nearest_exposure_index(self, exposure_us):
+        return min(
+            range(len(self.exposure_us_values)),
+            key=lambda i: abs(self.exposure_us_values[i] - exposure_us)
+        )
+
+    def update_gain(self, db_value):
+        if self.exposure_toggle.isChecked():
+            return
+
+        try:
+            # gain = 10 ** (db_value / 20)
+            gain = db_value
+
+            self.gain_slider.blockSignals(True)
+            self.gain_input.blockSignals(True)
+            self.gain_input.setValue(db_value)
+
+            self.camera_thread.picam2.set_controls({
+                "AnalogueGain": gain
+            })
+
+            self.gain_label.setText(f"Gain: {db_value} dB")
+
+        except Exception as e:
+            self.print_with_timestamp(f"Gain error: {e}")
+
+        finally:
+            self.gain_slider.blockSignals(False)
+            self.gain_input.blockSignals(False)
+
+    def gain_to_db(self, gain):
+        return int(round(20 * math.log10(gain)))
+
+    def toggle_exposure_mode(self, state):
+        auto_enabled = self.exposure_toggle.isChecked()
+
+        try:
+            if auto_enabled:
+                # ---- ENABLE AUTO ----
+                self.camera_thread.picam2.set_controls({
+                    "AeEnable": True
+                })
+
+                # Disable sliders (read-only mode)
+                self.exposure_slider.setEnabled(False)
+                self.gain_slider.setEnabled(False)
+
+                self.exposure_input.setEnabled(False)
+                self.gain_input.setEnabled(False)
+
+                self.exposure_label.setText("Exposure\nAuto")
+                self.gain_label.setText("Analog Gain (Auto)")
+
+                self.print_with_timestamp("Auto Exposure + Gain Enabled")
+
+            else:
+                # ---- SWITCH TO MANUAL ----
+                self.exposure_input.setEnabled(True)
+                self.gain_input.setEnabled(True)
+                # 🔥 IMPORTANT: grab current auto values so there's no jump
+                metadata = self.camera_thread.picam2.capture_metadata()
+
+                exposure = metadata.get("ExposureTime", None)
+                gain = metadata.get("AnalogueGain", None)
+
+                # Disable AE FIRST
+                self.camera_thread.picam2.set_controls({
+                    "AeEnable": False
+                })
+
+                controls = {}
+
+                if exposure is not None:
+                    idx = self.get_nearest_exposure_index(exposure)
+
+                    self.exposure_slider.blockSignals(True)
+                    self.exposure_slider.setValue(idx)
+                    self.exposure_slider.blockSignals(False)
+
+                    self.exposure_label.setText(
+                        f"Exposure\n{self.format_exposure(self.exposure_us_values[idx])}"
+                    )
+
+                if gain is not None:
+                    db_val = self.gain_to_db(gain)
+
+                    self.gain_slider.blockSignals(True)
+                    self.gain_slider.setValue(db_val)
+                    self.gain_slider.blockSignals(False)
+
+                    self.gain_label.setText(f"Gain: {db_val} dB")
+
+                # Apply locked-in values
+                if controls:
+                    self.camera_thread.picam2.set_controls(controls)
+
+                # Enable sliders (manual control)
+                self.exposure_slider.setEnabled(True)
+                self.gain_slider.setEnabled(True)
+
+                self.print_with_timestamp("Manual Exposure + Gain Enabled")
+
+        except Exception as e:
+            self.print_with_timestamp(f"Exposure toggle error: {e}")
+
+    def update_exposure(self, index):
+        if self.exposure_toggle.isChecked():
+            return
+
+        try:
+            
+            exposure_time = self.exposure_us_values[index]
+
+            self.exposure_slider.blockSignals(True)
+            self.exposure_input.blockSignals(True)
+            self.exposure_input.setValue(exposure_time)
+
+            self.camera_thread.picam2.set_controls({
+                "ExposureTime": exposure_time
+            })
+
+            self.exposure_label.setText(f"Exposure\n{self.format_exposure(exposure_time)}")
+
+        except Exception as e:
+            self.print_with_timestamp(f"Exposure error: {e}")
+
+        finally:
+            self.exposure_slider.blockSignals(False)
+            self.exposure_input.blockSignals(False)
+
+    def set_exposure_from_input(self, value):
+        if self.exposure_toggle.isChecked():
+            return
+
+        try:
+            self.camera_thread.picam2.set_controls({
+                "ExposureTime": int(value)
+            })
+
+            self.exposure_label.setText(f"Exposure\n{self.format_exposure(value)}")
+
+            # Sync slider to match typed value
+            idx = self.get_nearest_exposure_index(value)
+
+            self.exposure_slider.blockSignals(True)
+            self.exposure_slider.setValue(idx)
+            self.exposure_slider.blockSignals(False)
+
+        except Exception as e:
+            self.print_with_timestamp(f"Exposure input error: {e}")
+
+    def set_gain_from_input(self, db_value):
+        if self.exposure_toggle.isChecked():
+            return
+
+        try:
+            gain = db_value  # same logic you're already using
+
+            self.camera_thread.picam2.set_controls({
+                "AnalogueGain": gain
+            })
+
+            self.gain_label.setText(f"Gain: {db_value} dB")
+
+            # Sync slider
+            self.gain_slider.blockSignals(True)
+            self.gain_slider.setValue(int(db_value))
+            self.gain_slider.blockSignals(False)
+
+        except Exception as e:
+            self.print_with_timestamp(f"Gain input error: {e}")
+        
     def jog(self, axis, direction):
 
         if self.robot_busy:
@@ -704,30 +955,6 @@ class ModernMainWindow(QMainWindow):
             # save jpeg
             jpg_name = f"{base_name}.jpg"
             cv2.imwrite(jpg_name, raw_8bit)
-
-            '''
-            # Convert 12-bit to 8-bit (Vectorized NumPy operation)
-            raw_8bit = (raw_data >> 8).astype(np.uint8)
-
-            # Use OpenCV for faster processing
-            rgb_image = cv2.cvtColor(raw_8bit, cv2.COLOR_BAYER_RG2RGB)
-
-            # Convert RGB888 → RGB8888 (QTGL requires 4 channels)
-            rgba_image = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2RGBA)
-
-            # save jpeg
-            jpg_name = f"{base_name}.jpg"
-            cv2.imwrite(jpg_name, rgba_image)
-            '''
-            # Temporary save for reference
-            # frame = self.camera_thread.picam2.capture_array("main")
-            # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            # filename = f"image_{timestamp}.jpg"
-
-            # cv2.imwrite(filename, frame)
-            #####
 
             self.print_with_timestamp(f"Saved: {tiff_name} + {jpg_name}")
 
@@ -872,6 +1099,70 @@ class ModernMainWindow(QMainWindow):
         else:
             self.option3_enabled = False
             self.print_with_timestamp("Option 3 disabled")
+    
+    def update_auto_values(self):
+        if not self.exposure_toggle.isChecked():
+            return  # only update when auto is ON
+
+        try:
+            metadata = self.camera_thread.picam2.capture_metadata()
+
+            exposure = metadata.get("ExposureTime", None)
+            gain = metadata.get("AnalogueGain", None)
+
+            # ---- UPDATE EXPOSURE SLIDER ----
+            if exposure is not None:
+                idx = self.get_nearest_exposure_index(exposure)
+
+                self.exposure_slider.blockSignals(True)
+                self.exposure_slider.setValue(idx)
+                self.exposure_slider.blockSignals(False)
+
+                self.exposure_label.setText(
+                    f"Exposure\n{self.format_exposure(self.exposure_us_values[idx])}"
+    )
+
+            # ---- UPDATE GAIN SLIDER ----
+            if gain is not None:
+                db_val = self.gain_to_db(gain)
+
+                self.gain_slider.blockSignals(True)
+                self.gain_slider.setValue(db_val)
+                self.gain_slider.blockSignals(False)
+
+                self.gain_label.setText(f"Gain: {db_val} dB")
+
+        except Exception as e:
+            self.print_with_timestamp(f"Auto update error: {e}")
+        
+    def closeEvent(self, event):
+        print("Closing application...")
+
+        # ---- TURN OFF LED ----
+        try:
+            GPIO.output(26, GPIO.LOW)
+            GPIO.cleanup()
+            print("GPIO cleaned up")
+        except Exception as e:
+            print(f"GPIO cleanup error: {e}")
+
+        # ---- STOP CAMERA THREAD ----
+        try:
+            if hasattr(self, "camera_thread"):
+                self.camera_thread.stop()
+                print("Camera stopped")
+        except Exception as e:
+            print(f"Camera cleanup error: {e}")
+
+        # ---- CLOSE CNC SERIAL ----
+        try:
+            if self.cnc is not None:
+                self.cnc.close_connection()
+                print("CNC disconnected")
+        except Exception as e:
+            print(f"CNC cleanup error: {e}")
+
+        event.accept()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -881,4 +1172,5 @@ if __name__ == "__main__":
     window = ModernMainWindow()
     window.show()
     sys.exit(app.exec())
+
 
