@@ -1,10 +1,8 @@
 # add ? button that gets position
 # make arrowkeys work
-# make sliders update even when in automode
-# add spots to type in exact gain and exposure values
-# maybe put exposure values into fractions of seconds
 # turn off auto white balance
 # system locks when you hit a limit switch
+# save configuration/ load configuration with exposure/gain settings
 
 import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback, numpy as np, atexit, math
 from PyQt6.QtGui import QTextCursor, QImage, QPixmap
@@ -24,8 +22,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, 
     QSizePolicy,
     QSlider,
-    QSpinBox,
-    QDoubleSpinBox
+    QLineEdit
 )
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QObject
 
@@ -90,6 +87,16 @@ class CNCController:
     def __init__(self, port, baudrate, log_func=None):
         self.ser = serial.Serial(port, baudrate, timeout=1)
         time.sleep(2)
+    
+    def soft_reset(self):
+        print(">> GRBL SOFT RESET (Ctrl+X)")
+        try:
+            self.ser.write(b'\x18')  # Ctrl+X
+            time.sleep(0.1)
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+        except Exception as e:
+            print(f"Reset error: {e}")
         
     def wait_for_movement_completion(self,cleaned_line):
 
@@ -121,7 +128,8 @@ class CNCController:
                 if idle_counter > 0:
                     break
                 if 'alarm' in grbl_response.lower():
-                    raise ValueError(grbl_response)
+                    print("ALARM detected during wait:", grbl_response)
+                    return  # EXIT cleanly instead of crashing
 
     def send_command(self, command):
         #self.ser.reset_input_buffer() # flush the input and the output
@@ -142,6 +150,9 @@ class CNCController:
             print (f"< {response}")
             if 'error' in response.lower():
                 print('error--------------------------------------------------')
+            if 'alarm' in response.lower():
+                print("ALARM detected:", response)
+                return "ALARM", out
             if 'ok' in response:
                 break
             # print(response)
@@ -163,28 +174,6 @@ class CNCController:
         position['z_pos'] = float(MPos[2])
 
         return position
-   
-    def move_XY_at_Z_travel(self, position, z_travel_height):
-
-        current_position = CNCController.get_current_position(self)
-
-        if round(float(current_position['z_pos']),1) != float(z_travel_height):
-            #### go to z travel height
-            # command = "G0 z" + str(z_travel_height) + " " + "\n"
-            command = "G1 z" + str(z_travel_height) + " F2500" #+ "\n"
-            response, out = CNCController.send_command(self,command)
-       
-        # print('moving to XY')
-        # command = 'G0 ' + 'X' + str(position['x_pos']) + ' ' + 'Y' + str(position['y_pos'])
-        command = 'G1 ' + 'X' + str(position['x_pos']) + ' ' + 'Y' + str(position['y_pos']) + ' F2500'
-        response, out = CNCController.send_command(self,command)
-        ##### move z
-        # print('moving to Z')
-        # command = 'G0 ' + 'Z' + str(position['z_pos'])
-        command = 'G1 ' + 'Z' + str(position['z_pos']) + ' F2500'
-        response, out = CNCController.send_command(self,command)
-
-        return CNCController.get_current_position(self)
    
     def move_XYZ(self, position, return_position = False):
 
@@ -238,13 +227,24 @@ class CNCWorker(QThread):
     def run(self):
         try:
             if self.command_type == "jog":
-                self.cnc.move_XYZ(self.command_data)
+                result = self.cnc.move_XYZ(self.command_data)
 
             elif self.command_type == "home":
-                self.cnc.home_grbl()
+                result = self.cnc.home_grbl()
+
+            if result == "ALARM":
+                raise RuntimeError("Limit switch hit")
 
         except Exception as e:
             print("THREAD ERROR:", e)
+
+            try:
+                print("Limit hit → sending reset")
+                self.cnc.soft_reset()
+                time.sleep(0.2)
+                self.cnc.send_command("$X\n")
+            except Exception as reset_error:
+                print("Reset failed:", reset_error)
 
 class CameraWorker(QThread):
     frame_ready = pyqtSignal(QImage)
@@ -409,6 +409,9 @@ class ModernMainWindow(QMainWindow):
                 border: 1px solid #3a3a5a;
             }
         """)
+
+        self.faint_style = "color: #888888;"   # gray
+        self.active_style = "color:rgb(0, 0, 0);"  # black
        
         # Create central widget and main layout
         central_widget = QWidget()
@@ -496,7 +499,7 @@ class ModernMainWindow(QMainWindow):
 
         # Toggle (Auto Exposure)
         self.exposure_toggle = QCheckBox("Auto")
-        self.exposure_toggle.setChecked(True)
+        self.exposure_toggle.setChecked(False)
         self.exposure_toggle.stateChanged.connect(self.toggle_exposure_mode)
 
         # Exposure table
@@ -512,12 +515,14 @@ class ModernMainWindow(QMainWindow):
         self.exposure_slider.setEnabled(False)   # disabled when auto is ON
         self.exposure_slider.valueChanged.connect(self.update_exposure)
 
-        self.exposure_input = QSpinBox()
-        self.exposure_input.setRange(1, 1_000_000)  # microseconds
-        self.exposure_input.setSuffix(" us")
+        self.exposure_input = QLineEdit()
+        self.exposure_input.setText("Enter exposure")
         self.exposure_input.setEnabled(False)
+        self.exposure_input.returnPressed.connect(self.set_exposure_from_input)
 
-        self.exposure_input.valueChanged.connect(self.set_exposure_from_input)
+        # Focus events
+        self.exposure_input.focusInEvent = self.exposure_focus_in
+        self.exposure_input.focusOutEvent = self.exposure_focus_out
 
         # Add to layout
         exposure_layout.addWidget(self.exposure_label)
@@ -566,62 +571,69 @@ class ModernMainWindow(QMainWindow):
         button_layout.addStretch()
        
         left_layout.addWidget(button_frame)
-       
-        # Toggle switches
+
         toggle_frame = QFrame()
         toggle_layout = QHBoxLayout(toggle_frame)
         toggle_layout.setContentsMargins(15, 15, 15, 15)
         toggle_layout.setSpacing(20)
-       
-        # Toggle LED
-        toggle1_layout = QVBoxLayout()
-        self.toggle_label1 = QLabel("LED:")
+
+        # ---- LED GROUP ----
+        led_layout = QVBoxLayout()
+
+        self.toggle_label1 = QLabel("LED")
+        self.toggle_label1.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.toggle_switch1 = QCheckBox()
         self.toggle_switch1.setChecked(False)
         self.toggle_switch1.stateChanged.connect(self.toggle_option1)
-        toggle1_layout.addWidget(self.toggle_label1)
-        toggle1_layout.addWidget(self.toggle_switch1)
-        toggle1_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
-       
-        # Analog Gain Slider
-        self.gain_label = QLabel("Analog Gain: 1.0")
+
+        led_layout.addWidget(self.toggle_label1)
+        led_layout.addWidget(self.toggle_switch1, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # ---- STEP SIZE GROUP ----
+        step_layout = QVBoxLayout()
+
+        self.step_label = QLabel("Step Size")
+        self.step_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        step_layout.addWidget(self.step_label)
+        step_layout.addWidget(self.step)
+
+        # ---- GAIN GROUP ----
+        gain_layout = QVBoxLayout()
+
+        self.gain_label = QLabel("Gain: 0 dB")
+        self.gain_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        gain_row = QHBoxLayout()
 
         self.gain_slider = QSlider(Qt.Orientation.Horizontal)
         self.gain_slider.setMinimum(0)
         self.gain_slider.setMaximum(51)
         self.gain_slider.setValue(0)
-
+        self.gain_slider.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.gain_slider.valueChanged.connect(self.update_gain)
 
-        toggle_layout.addLayout(toggle1_layout)
-
-        self.gain_input = QDoubleSpinBox()
-        self.gain_input.setRange(0.0, 50.0)  # dB
-        self.gain_input.setSingleStep(0.5)
-        self.gain_input.setSuffix(" dB")
+        self.gain_input = QLineEdit()
+        self.gain_input.setText("Enter gain")
+        self.gain_input.setFixedWidth(100)
         self.gain_input.setEnabled(False)
+        self.gain_input.returnPressed.connect(self.set_gain_from_input)
+        self.gain_input.focusInEvent = self.gain_focus_in
 
-        self.gain_input.valueChanged.connect(self.set_gain_from_input)
+        self.gain_input.focusInEvent = self.gain_focus_in
+        self.gain_input.focusOutEvent = self.gain_focus_out
 
-        toggle_layout.addWidget(self.gain_input)
+        gain_row.addWidget(self.gain_slider)
+        gain_row.addWidget(self.gain_input)
 
-        # Step size control
-        step_layout = QVBoxLayout()
+        gain_layout.addWidget(self.gain_label)
+        gain_layout.addLayout(gain_row)
 
-        self.step_label = QLabel("Step Size")
-        self.step_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-
-        step_layout.addWidget(self.step_label)
-        step_layout.addWidget(self.step)
-
-        toggle_layout.addLayout(step_layout)
-
-        toggle_layout.addWidget(self.gain_label)
-        toggle_layout.addWidget(self.gain_slider)
-        #toggle_layout.addLayout(toggle2_layout)
-        #toggle_layout.addLayout(toggle3_layout)
-        toggle_layout.addStretch()
-       
+        # ---- ADD TO MAIN LAYOUT (ORDER MATTERS) ----
+        toggle_layout.addLayout(led_layout, 1)
+        toggle_layout.addLayout(step_layout, 1)
+        toggle_layout.addLayout(gain_layout, 4)  # gain gets most space
         left_layout.addWidget(toggle_frame)
        
         # Arrow buttons grid
@@ -662,6 +674,7 @@ class ModernMainWindow(QMainWindow):
         arrow_layout.addWidget(self.left_button, 1, 0)
        
         left_layout.addWidget(arrow_frame)
+        self.set_input_faint_defaults()
 
         # Initialize stream redirector
         self.initialize_serial_connection()
@@ -676,13 +689,12 @@ class ModernMainWindow(QMainWindow):
        
         # Store toggle states
         self.option1_enabled = False
-        self.option2_enabled = False
-        self.option3_enabled = False
 
         # camera
         self.camera_thread = CameraWorker()
         self.camera_thread.frame_ready.connect(self.update_camera_view)
         self.camera_thread.start()
+        QTimer.singleShot(500, lambda: self.toggle_exposure_mode(0))
 
     # camera
     def update_camera_view(self, image):
@@ -692,8 +704,18 @@ class ModernMainWindow(QMainWindow):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation
         )
-        self.camera_label.setPixmap(scaled)
-    
+        self.camera_label.setPixmap(scaled
+        )
+
+    def set_input_faint_defaults(self):
+        # Exposure
+        self.exposure_input.setText("Enter exposure")
+        self.exposure_input.setStyleSheet(self.faint_style)
+
+        # Gain
+        self.gain_input.setText("Enter gain")
+        self.gain_input.setStyleSheet(self.faint_style)
+
     def format_exposure(self, exposure_us):
         if exposure_us is None or exposure_us <= 0:
             return "?"
@@ -729,7 +751,7 @@ class ModernMainWindow(QMainWindow):
 
             self.gain_slider.blockSignals(True)
             self.gain_input.blockSignals(True)
-            self.gain_input.setValue(db_value)
+            self.gain_input.setText(str(db_value))
 
             self.camera_thread.picam2.set_controls({
                 "AnalogueGain": gain
@@ -773,6 +795,7 @@ class ModernMainWindow(QMainWindow):
                 # ---- SWITCH TO MANUAL ----
                 self.exposure_input.setEnabled(True)
                 self.gain_input.setEnabled(True)
+                self.set_input_faint_defaults()
                 # 🔥 IMPORTANT: grab current auto values so there's no jump
                 metadata = self.camera_thread.picam2.capture_metadata()
 
@@ -783,8 +806,6 @@ class ModernMainWindow(QMainWindow):
                 self.camera_thread.picam2.set_controls({
                     "AeEnable": False
                 })
-
-                controls = {}
 
                 if exposure is not None:
                     idx = self.get_nearest_exposure_index(exposure)
@@ -806,10 +827,6 @@ class ModernMainWindow(QMainWindow):
 
                     self.gain_label.setText(f"Gain: {db_val} dB")
 
-                # Apply locked-in values
-                if controls:
-                    self.camera_thread.picam2.set_controls(controls)
-
                 # Enable sliders (manual control)
                 self.exposure_slider.setEnabled(True)
                 self.gain_slider.setEnabled(True)
@@ -818,7 +835,20 @@ class ModernMainWindow(QMainWindow):
 
         except Exception as e:
             self.print_with_timestamp(f"Exposure toggle error: {e}")
+    
+    def exposure_focus_in(self, event):
+        if self.exposure_input.text() == "Enter exposure":
+            self.exposure_input.clear()
+        self.exposure_input.setStyleSheet(self.active_style)
+        QLineEdit.focusInEvent(self.exposure_input, event)
 
+
+    def exposure_focus_out(self, event):
+        if self.exposure_input.text().strip() == "":
+            self.exposure_input.setText("Enter exposure")
+            self.exposure_input.setStyleSheet(self.faint_style)
+        QLineEdit.focusOutEvent(self.exposure_input, event)
+        
     def update_exposure(self, index):
         if self.exposure_toggle.isChecked():
             return
@@ -829,7 +859,7 @@ class ModernMainWindow(QMainWindow):
 
             self.exposure_slider.blockSignals(True)
             self.exposure_input.blockSignals(True)
-            self.exposure_input.setValue(exposure_time)
+            self.exposure_input.setText(self.format_exposure(exposure_time))
 
             self.camera_thread.picam2.set_controls({
                 "ExposureTime": exposure_time
@@ -844,47 +874,87 @@ class ModernMainWindow(QMainWindow):
             self.exposure_slider.blockSignals(False)
             self.exposure_input.blockSignals(False)
 
-    def set_exposure_from_input(self, value):
+    def set_exposure_from_input(self):
         if self.exposure_toggle.isChecked():
             return
 
+        text = self.exposure_input.text().strip()
+
         try:
+            # ---- PARSE INPUT ----
+            if "/" in text:
+                num, denom = text.split("/")
+                seconds = float(num) / float(denom)
+            else:
+                seconds = float(text)
+
+            exposure_us = int(seconds * 1_000_000)
+
+            if exposure_us <= 0:
+                raise ValueError("Exposure must be positive")
+
+            # ---- APPLY TO CAMERA ----
             self.camera_thread.picam2.set_controls({
-                "ExposureTime": int(value)
+                "ExposureTime": exposure_us
             })
 
-            self.exposure_label.setText(f"Exposure\n{self.format_exposure(value)}")
+            # ---- UPDATE LABEL ----
+            self.exposure_label.setText(
+                f"Exposure\n{self.format_exposure(exposure_us)}"
+            )
 
-            # Sync slider to match typed value
-            idx = self.get_nearest_exposure_index(value)
+            # AUTO-FORMAT INPUT
+            self.exposure_input.setText(self.format_exposure(exposure_us))
+
+
+            # ---- SYNC SLIDER ----
+            idx = self.get_nearest_exposure_index(exposure_us)
 
             self.exposure_slider.blockSignals(True)
             self.exposure_slider.setValue(idx)
             self.exposure_slider.blockSignals(False)
+            self.exposure_input.setText("Enter exposure")
+            self.exposure_input.setStyleSheet(self.faint_style)
 
         except Exception as e:
-            self.print_with_timestamp(f"Exposure input error: {e}")
+            self.print_with_timestamp(f"Invalid exposure input: {text}")
+    
+    def gain_focus_in(self, event):
+        if self.gain_input.text() == "Enter gain":
+            self.gain_input.clear()
+        self.gain_input.setStyleSheet(self.active_style)
+        QLineEdit.focusInEvent(self.gain_input, event)
 
-    def set_gain_from_input(self, db_value):
+
+    def gain_focus_out(self, event):
+        if self.gain_input.text().strip() == "":
+            self.gain_input.setText("Enter gain")
+            self.gain_input.setStyleSheet(self.faint_style)
+        QLineEdit.focusOutEvent(self.gain_input, event)
+
+    def set_gain_from_input(self):
         if self.exposure_toggle.isChecked():
             return
 
+        text = self.gain_input.text().strip()
+
         try:
-            gain = db_value  # same logic you're already using
+            db_value = float(text)
 
             self.camera_thread.picam2.set_controls({
-                "AnalogueGain": gain
+                "AnalogueGain": db_value
             })
 
             self.gain_label.setText(f"Gain: {db_value} dB")
 
-            # Sync slider
             self.gain_slider.blockSignals(True)
             self.gain_slider.setValue(int(db_value))
             self.gain_slider.blockSignals(False)
+            self.gain_input.setText("Enter gain")
+            self.gain_input.setStyleSheet(self.faint_style)
 
-        except Exception as e:
-            self.print_with_timestamp(f"Gain input error: {e}")
+        except Exception:
+            self.print_with_timestamp(f"Invalid gain input: {text}")
         
     def jog(self, axis, direction):
 
@@ -1134,7 +1204,27 @@ class ModernMainWindow(QMainWindow):
 
         except Exception as e:
             self.print_with_timestamp(f"Auto update error: {e}")
-        
+    
+    def reset_grbl(self):
+        if self.cnc is None:
+            self.print_with_timestamp("CNC not connected")
+            return
+        self.print_with_timestamp("⚠️ LIMIT SWITCH HIT — RESETTING")
+        self.set_motion_buttons_enabled(False)
+        self.print_with_timestamp("Sending GRBL soft reset...")
+        self.cnc.soft_reset()
+
+        # Unlock after reset (GRBL goes into alarm state)
+        time.sleep(0.2)
+        try:
+            self.cnc.send_command("$X\n")
+            self.print_with_timestamp("GRBL unlocked after reset")
+        except Exception as e:
+            self.print_with_timestamp(f"Unlock failed: {e}")
+
+        self.robot_busy = False
+        self.set_motion_buttons_enabled(True)
+
     def closeEvent(self, event):
         print("Closing application...")
 
@@ -1172,5 +1262,3 @@ if __name__ == "__main__":
     window = ModernMainWindow()
     window.show()
     sys.exit(app.exec())
-
-
