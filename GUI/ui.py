@@ -8,6 +8,8 @@ import math
 import time
 import datetime
 import traceback
+import sys
+import os
 
 import cv2
 import numpy as np
@@ -25,6 +27,32 @@ from PyQt6.QtWidgets import (
 
 from camera import CameraWorker, process_raw
 from cnc import CNCController, CNCWorker
+
+
+# ---------------------------------------------------------------------------
+# File-based debug logger — survives GUI crashes
+# ---------------------------------------------------------------------------
+
+DEBUG_LOG_PATH = "/home/r/rpi_camera_tests/debug.log"
+
+def dlog(msg: str):
+    """Write a timestamped debug line to file immediately (flush after every write)."""
+    line = f"{time.strftime('%H:%M:%S')} [DEBUG] {msg}\n"
+    print(line, end="")   # also goes to terminal if it's still open
+    try:
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(line)
+    except Exception:
+        pass
+
+
+# Catch any unhandled exception, log the full traceback, then re-raise
+def _excepthook(exc_type, exc_value, exc_tb):
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    dlog(f"UNHANDLED EXCEPTION:\n{msg}")
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+sys.excepthook = _excepthook
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +129,7 @@ class ModernMainWindow(QMainWindow):
         # State
         self.cnc          = None
         self.robot_busy   = False
+        self.in_alarm     = False   # True while GRBL is in alarm / recovering
         self.option1_enabled = False
         self.active_threads  = []
 
@@ -645,7 +674,9 @@ class ModernMainWindow(QMainWindow):
     # ======================================================================
 
     def _jog(self, axis: str, direction: int):
-        if self.robot_busy:
+        dlog(f" _jog called — robot_busy={self.robot_busy} in_alarm={self.in_alarm}")
+        if self.robot_busy or self.in_alarm:
+            dlog(" _jog blocked — returning early")
             return
 
         self.robot_busy = True
@@ -654,12 +685,19 @@ class ModernMainWindow(QMainWindow):
         step = self.step.value() * direction
         pos  = self.cnc.get_current_position()
 
+        if pos is None:
+            dlog(" _jog: get_current_position returned None — aborting, triggering alarm")
+            self.robot_busy = False
+            self._on_alarm()
+            return
+
+        dlog(f" _jog: moving axis={axis} step={step} pos={pos}")
         pos[{"X": "x_pos", "Y": "y_pos", "Z": "z_pos"}[axis]] += step
 
         self._start_cnc_thread("jog", pos)
 
     def _safe_home(self):
-        if self.robot_busy:
+        if self.robot_busy or self.in_alarm:
             return
         self.robot_busy = True
         self._set_motion_buttons_enabled(False)
@@ -667,7 +705,7 @@ class ModernMainWindow(QMainWindow):
         self._start_cnc_thread("home")
 
     def _move_center(self):
-        if self.robot_busy:
+        if self.robot_busy or self.in_alarm:
             return
         self.robot_busy = True
         self._set_motion_buttons_enabled(False)
@@ -677,12 +715,21 @@ class ModernMainWindow(QMainWindow):
     def _start_cnc_thread(self, command_type: str, data=None):
         thread = CNCWorker(self.cnc, command_type, data)
         self.active_threads.append(thread)
+        # QueuedConnection: signal is always delivered on the main thread,
+        # so _on_alarm can safely touch the UI and start a new QThread.
+        thread.alarm_triggered.connect(
+            self._on_alarm, Qt.ConnectionType.QueuedConnection
+        )
         thread.finished.connect(self._motion_finished)
         thread.finished.connect(lambda: self.active_threads.remove(thread))
         thread.finished.connect(thread.deleteLater)
         thread.start()
 
     def _motion_finished(self):
+        dlog(f" _motion_finished — in_alarm={self.in_alarm} robot_busy={self.robot_busy}")
+        if self.in_alarm:
+            dlog(" _motion_finished: in_alarm is True, skipping re-enable")
+            return
         self.robot_busy = False
         self._set_motion_buttons_enabled(True)
 
@@ -694,21 +741,47 @@ class ModernMainWindow(QMainWindow):
         ):
             btn.setEnabled(enabled)
 
-    def _reset_grbl(self):
-        if self.cnc is None:
-            self.print_with_timestamp("CNC not connected")
+    def _on_alarm(self):
+        """Runs on the main thread (QueuedConnection).
+
+        Guards against double-firing: if recovery is already running, ignore.
+        """
+        if self.in_alarm:
+            dlog("_on_alarm: already in alarm — ignoring duplicate signal")
             return
-        self.print_with_timestamp("⚠️ LIMIT SWITCH HIT — RESETTING")
+
+        dlog(f"_on_alarm fired — setting in_alarm=True")
+        self.in_alarm   = True
+        self.robot_busy = True
+        self._start_recovery()
+
+    def _start_recovery(self):
+        """Lock buttons and start the reset → unlock → home recovery thread."""
+        dlog(f"_start_recovery — in_alarm={self.in_alarm} robot_busy={self.robot_busy}")
         self._set_motion_buttons_enabled(False)
-        self.cnc.soft_reset()
-        time.sleep(0.2)
-        try:
-            self.cnc.send_command("$X\n")
-            self.print_with_timestamp("GRBL unlocked after reset")
-        except Exception as e:
-            self.print_with_timestamp(f"Unlock failed: {e}")
+        self.print_with_timestamp("⚠️ ALARM — limit switch hit. Resetting and re-homing...")
+
+        thread = CNCWorker(self.cnc, "recover")
+        self.active_threads.append(thread)
+
+        thread.alarm_triggered.connect(self._on_recovery_failed)
+        thread.finished.connect(self._on_recovery_finished)
+        thread.finished.connect(lambda: self.active_threads.remove(thread))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _on_recovery_finished(self):
+        dlog(" _on_recovery_finished — clearing in_alarm, re-enabling buttons")
+        self.in_alarm   = False
         self.robot_busy = False
         self._set_motion_buttons_enabled(True)
+        self.print_with_timestamp("Recovery complete. Motion re-enabled.")
+
+    def _on_recovery_failed(self):
+        # Leave in_alarm = True and buttons disabled
+        self.print_with_timestamp(
+            "⚠️ Recovery failed. Check the machine manually before moving."
+        )
 
     # ======================================================================
     # GPIO / LED

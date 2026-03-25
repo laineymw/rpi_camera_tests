@@ -3,9 +3,22 @@ cnc.py — Serial communication with GRBL and motion worker thread.
 """
 
 import time
+import traceback
 import serial
 
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, pyqtSignal
+
+
+def dlog(msg: str):
+    """Mirror of ui.dlog — writes to the same debug log file."""
+    import time as _time
+    line = f"{_time.strftime('%H:%M:%S')} [DEBUG] {msg}\n"
+    print(line, end="")
+    try:
+        with open("/home/r/rpi_camera_tests/debug.log", "a") as f:
+            f.write(line)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -27,15 +40,33 @@ class CNCController:
         self.ser.close()
 
     def soft_reset(self):
-        """Send GRBL Ctrl+X soft reset and flush buffers."""
-        print(">> GRBL SOFT RESET (Ctrl+X)")
+        """Send GRBL Ctrl+X soft reset, then reopen the serial port cleanly.
+
+        Calling reset_input_buffer/reset_output_buffer after writing Ctrl+X can
+        invalidate the port's internal file descriptor on Linux. Closing and
+        reopening is the only reliable way to get a clean state.
+        """
+        dlog("soft_reset: sending Ctrl+X")
+        port     = self.ser.port
+        baudrate = self.ser.baudrate
+
         try:
             self.ser.write(b"\x18")
             time.sleep(0.1)
-            self.ser.reset_input_buffer()
-            self.ser.reset_output_buffer()
         except Exception as e:
-            print(f"Reset error: {e}")
+            dlog(f"soft_reset: write error (continuing): {e}")
+
+        try:
+            self.ser.close()
+        except Exception as e:
+            dlog(f"soft_reset: close error (continuing): {e}")
+
+        time.sleep(0.5)   # give GRBL time to finish resetting
+
+        dlog("soft_reset: reopening serial port")
+        self.ser = serial.Serial(port, baudrate, timeout=1)
+        time.sleep(0.5)   # wait for port to stabilise
+        dlog("soft_reset: serial port reopened")
 
     # ------------------------------------------------------------------
     # Core command / query helpers
@@ -45,12 +76,14 @@ class CNCController:
         """Poll GRBL with '?' until it reports Idle."""
         skip_keywords = ("$X", "$$", "?")
         if any(kw in cleaned_line for kw in skip_keywords):
+            dlog(f"wait_for_movement_completion: skipping for {cleaned_line.strip()!r}")
             return
 
         idle_counter = 0
         time.sleep(0.025)
 
         while True:
+            dlog(f"wait_poll: fd={self.ser.fd} is_open={self.ser.isOpen()}")
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             time.sleep(0.025)
@@ -59,6 +92,7 @@ class CNCController:
             time.sleep(0.025)
 
             grbl_response = self.ser.readline().decode().strip()
+            dlog(f"wait_poll response: {grbl_response!r}")
 
             if "ok" not in grbl_response.lower():
                 if "idle" in grbl_response.lower():
@@ -68,11 +102,12 @@ class CNCController:
                 break
 
             if "alarm" in grbl_response.lower():
-                print("ALARM detected during wait:", grbl_response)
+                dlog(f"ALARM detected during wait: {grbl_response}")
                 return
 
     def send_command(self, command: str):
         """Send one GRBL command, wait for completion, and return the response."""
+        dlog(f"send_command: fd={self.ser.fd} is_open={self.ser.isOpen()} cmd={command.strip()!r}")
         print(f"> {command.strip()}")
         time.sleep(0.025)
         self.ser.write(command.encode())
@@ -80,13 +115,17 @@ class CNCController:
 
         self.wait_for_movement_completion(command)
 
+        dlog(f"send_command: after wait, fd={self.ser.fd} is_open={self.ser.isOpen()}")
+
         out = []
         response = ""
-        for _ in range(50):
+        for i in range(50):
             time.sleep(0.001)
+            dlog(f"send_command readline #{i}: fd={self.ser.fd}")
             response = self.ser.readline().decode().strip()
             time.sleep(0.001)
             out.append(response)
+            dlog(f"send_command readline #{i} response: {response!r}")
             print(f"< {response}")
 
             if "error" in response.lower():
@@ -104,17 +143,24 @@ class CNCController:
     # ------------------------------------------------------------------
 
     def get_current_position(self) -> dict:
-        """Query GRBL for the current machine position."""
-        _, out = self.send_command("? \n")
-        mpos = out[0].split("|")[1]          # e.g. "MPos:-81.000,-67.000,-17.000"
-        coords = mpos.split(",")
-        coords[0] = coords[0].split(":")[1]
+        """Query GRBL for the current machine position.
 
-        return {
-            "x_pos": float(coords[0]),
-            "y_pos": float(coords[1]),
-            "z_pos": float(coords[2]),
-        }
+        Returns None if GRBL is in ALARM state or the response is malformed.
+        """
+        _, out = self.send_command("? \n")
+        try:
+            # Normal response: "<Idle|MPos:-81.000,-67.000,-17.000|...>"
+            mpos = out[0].split("|")[1]
+            coords = mpos.split(",")
+            coords[0] = coords[0].split(":")[1]
+            return {
+                "x_pos": float(coords[0]),
+                "y_pos": float(coords[1]),
+                "z_pos": float(coords[2]),
+            }
+        except (IndexError, ValueError) as e:
+            print(f"get_current_position parse error (ALARM?): {out[0]!r} — {e}")
+            return None
 
     def move_XYZ(self, position: dict, return_position: bool = False):
         """Issue a G1 linear move to the supplied position dict."""
@@ -145,7 +191,13 @@ class CNCController:
 # ---------------------------------------------------------------------------
 
 class CNCWorker(QThread):
-    """Runs CNC commands in a background thread so the UI stays responsive."""
+    """Runs CNC commands in a background thread so the UI stays responsive.
+
+    Emits ``alarm_triggered`` if GRBL reports an ALARM (e.g. limit switch hit).
+    The UI is responsible for handling recovery — this thread does not self-recover.
+    """
+
+    alarm_triggered = pyqtSignal()
 
     def __init__(self, cnc: CNCController, command_type: str, command_data=None):
         super().__init__()
@@ -154,28 +206,34 @@ class CNCWorker(QThread):
         self.command_data = command_data
 
     def run(self):
+        dlog(f"CNCWorker.run() started — type={self.command_type}")
         try:
             if self.command_type == "jog":
                 result = self.cnc.move_XYZ(self.command_data)
-            elif self.command_type == "home":
-                result = self.cnc.home_grbl()
-            else:
-                print(f"Unknown command type: {self.command_type}")
-                return
+                dlog(f"move_XYZ result={result!r}")
+                if result == "ALARM":
+                    dlog("Emitting alarm_triggered from jog")
+                    self.alarm_triggered.emit()
 
-            if result == "ALARM":
-                raise RuntimeError("Limit switch hit")
+            elif self.command_type == "home":
+                self.cnc.home_grbl()
+
+            elif self.command_type == "recover":
+                dlog("recover: soft_reset")
+                self.cnc.soft_reset()
+                time.sleep(0.2)
+                dlog("recover: sending $X")
+                self.cnc.send_command("$X\n")
+                dlog("recover: homing")
+                self.cnc.home_grbl()
+                dlog("recover: complete")
+
+            else:
+                dlog(f"Unknown command type: {self.command_type}")
 
         except Exception as e:
-            print("THREAD ERROR:", e)
-            self._attempt_recovery()
+            tb = traceback.format_exc()
+            dlog(f"CNCWorker EXCEPTION (type={self.command_type}):\n{tb}")
+            self.alarm_triggered.emit()
 
-    def _attempt_recovery(self):
-        """Try a soft reset + unlock after a limit switch alarm."""
-        try:
-            print("Limit hit → sending reset")
-            self.cnc.soft_reset()
-            time.sleep(0.2)
-            self.cnc.send_command("$X\n")
-        except Exception as reset_error:
-            print("Reset failed:", reset_error)
+        dlog(f"CNCWorker.run() exiting — type={self.command_type}")
