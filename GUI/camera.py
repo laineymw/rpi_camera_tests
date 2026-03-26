@@ -103,6 +103,7 @@ class CameraWorker(QThread):
         )
         self.picam2.configure(config)
         self.picam2.start()
+        self.picam2.set_controls({"AwbEnable": False})
 
     def run(self):
         while self.running:

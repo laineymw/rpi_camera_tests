@@ -10,10 +10,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 def dlog(msg: str):
-    """Mirror of ui.dlog — writes to the same debug log file."""
-    import time as _time
-    line = f"{_time.strftime('%H:%M:%S')} [DEBUG] {msg}\n"
-    print(line, end="")
+    """Write a timestamped debug line to file only — never to stdout/GUI."""
+    line = f"{time.strftime('%H:%M:%S')} [DEBUG] {msg}\n"
     try:
         with open("/home/r/rpi_camera_tests/debug.log", "a") as f:
             f.write(line)
@@ -42,9 +40,8 @@ class CNCController:
     def soft_reset(self):
         """Send GRBL Ctrl+X soft reset, then reopen the serial port cleanly.
 
-        Calling reset_input_buffer/reset_output_buffer after writing Ctrl+X can
-        invalidate the port's internal file descriptor on Linux. Closing and
-        reopening is the only reliable way to get a clean state.
+        After a reset GRBL fully reboots and sends a boot banner. We flush that
+        here so send_command always starts with a clean buffer.
         """
         dlog("soft_reset: sending Ctrl+X")
         port     = self.ser.port
@@ -61,12 +58,22 @@ class CNCController:
         except Exception as e:
             dlog(f"soft_reset: close error (continuing): {e}")
 
-        time.sleep(0.5)   # give GRBL time to finish resetting
+        time.sleep(0.5)   # give GRBL time to finish rebooting
 
         dlog("soft_reset: reopening serial port")
         self.ser = serial.Serial(port, baudrate, timeout=1)
-        time.sleep(0.5)   # wait for port to stabilise
-        dlog("soft_reset: serial port reopened")
+        time.sleep(0.5)
+
+        # Drain the GRBL boot banner ("Grbl 1.1f [...]", "[MSG:...]") from buffer
+        dlog("soft_reset: flushing boot banner")
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            line = self.ser.readline().decode(errors="replace").strip()
+            dlog(f"soft_reset flush: {line!r}")
+            if not line:
+                break   # timeout with no data — buffer is clear
+
+        dlog("soft_reset: serial port ready")
 
     # ------------------------------------------------------------------
     # Core command / query helpers
@@ -108,7 +115,7 @@ class CNCController:
     def send_command(self, command: str):
         """Send one GRBL command, wait for completion, and return the response."""
         dlog(f"send_command: fd={self.ser.fd} is_open={self.ser.isOpen()} cmd={command.strip()!r}")
-        print(f"> {command.strip()}")
+        dlog(f"> {command.strip()}")
         time.sleep(0.025)
         self.ser.write(command.encode())
         time.sleep(0.025)
@@ -126,13 +133,15 @@ class CNCController:
             time.sleep(0.001)
             out.append(response)
             dlog(f"send_command readline #{i} response: {response!r}")
-            print(f"< {response}")
 
             if "error" in response.lower():
-                print("error--------------------------------------------------")
+                dlog("send_command: error response")
             if "alarm" in response.lower():
-                print("ALARM detected:", response)
+                dlog(f"ALARM detected: {response}")
                 return "ALARM", out
+            if "grbl" in response.lower() and "help" in response.lower():
+                dlog("send_command: GRBL reboot banner detected — stopping readline loop")
+                break
             if "ok" in response:
                 break
 
@@ -159,7 +168,7 @@ class CNCController:
                 "z_pos": float(coords[2]),
             }
         except (IndexError, ValueError) as e:
-            print(f"get_current_position parse error (ALARM?): {out[0]!r} — {e}")
+            dlog(f"get_current_position parse error (ALARM?): {out[0]!r} — {e}")
             return None
 
     def move_XYZ(self, position: dict, return_position: bool = False):
@@ -176,7 +185,7 @@ class CNCController:
     # ------------------------------------------------------------------
 
     def home_grbl(self):
-        print("HOMING CNC")
+        dlog("home_grbl: sending $H")
         self.send_command("$H\n")
 
     def set_up_grbl(self, home: bool = True):

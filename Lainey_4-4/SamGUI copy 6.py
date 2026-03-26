@@ -1,7 +1,6 @@
 # add ? button that gets position
 # make arrowkeys work
 # turn off auto white balance
-# system locks when you hit a limit switch
 # save configuration/ load configuration with exposure/gain settings
 
 import sys, time, serial, RPi.GPIO as GPIO, cv2, datetime, traceback, numpy as np, atexit, math

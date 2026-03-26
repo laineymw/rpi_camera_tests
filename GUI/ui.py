@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 import RPi.GPIO as GPIO
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QEvent
 from PyQt6.QtGui import QTextCursor, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QApplication,
@@ -36,9 +36,8 @@ from cnc import CNCController, CNCWorker
 DEBUG_LOG_PATH = "/home/r/rpi_camera_tests/debug.log"
 
 def dlog(msg: str):
-    """Write a timestamped debug line to file immediately (flush after every write)."""
+    """Write a timestamped debug line to file only — never to stdout/GUI."""
     line = f"{time.strftime('%H:%M:%S')} [DEBUG] {msg}\n"
-    print(line, end="")   # also goes to terminal if it's still open
     try:
         with open(DEBUG_LOG_PATH, "a") as f:
             f.write(line)
@@ -118,18 +117,77 @@ class StreamRedirector(QObject):
 
 
 # ---------------------------------------------------------------------------
-# Main window
+# Splash screen
 # ---------------------------------------------------------------------------
+
+class SplashScreen(QWidget):
+    """Frameless loading screen shown while the main window initialises."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.WindowType.SplashScreen |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setFixedSize(400, 220)
+        self.setStyleSheet("background-color: #1e1e2e; border-radius: 12px;")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(40, 40, 40, 40)
+        layout.setSpacing(20)
+
+        title = QLabel("MiniMax Controller")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 22px; font-weight: 700; color: #6a6aff;")
+
+        self.status_label = QLabel("Starting up...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.setStyleSheet("font-size: 13px; color: #888888;")
+
+        # Animated dots timer
+        self._dot_count = 0
+        self._dot_timer = QTimer()
+        self._dot_timer.timeout.connect(self._animate_dots)
+        self._dot_timer.start(400)
+
+        layout.addStretch()
+        layout.addWidget(title)
+        layout.addWidget(self.status_label)
+        layout.addStretch()
+
+        # Centre on screen
+        screen = QApplication.primaryScreen().geometry()
+        self.move(
+            screen.center().x() - self.width() // 2,
+            screen.center().y() - self.height() // 2,
+        )
+
+    def set_status(self, text: str):
+        self.status_label.setText(text)
+        QApplication.processEvents()
+
+    def _animate_dots(self):
+        self._dot_count = (self._dot_count + 1) % 4
+        dots = "." * self._dot_count
+        base = self.status_label.text().rstrip(".")
+        self.status_label.setText(base + dots)
+
+    def close_splash(self):
+        self._dot_timer.stop()
+        self.close()
+
+
 
 class ModernMainWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, splash: SplashScreen = None):
         super().__init__()
 
         # State
         self.cnc          = None
         self.robot_busy   = False
-        self.in_alarm     = False   # True while GRBL is in alarm / recovering
+        self.in_alarm     = False
         self.option1_enabled = False
         self.active_threads  = []
 
@@ -147,17 +205,23 @@ class ModernMainWindow(QMainWindow):
         self.setWindowTitle("MiniMax Controller")
         self.setGeometry(100, 100, 1400, 800)
         self.setStyleSheet(DARK_THEME)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Intercept key events at the application level so jog keys always
+        # work regardless of which child widget currently has focus.
+        QApplication.instance().installEventFilter(self)
 
+        if splash: splash.set_status("Building UI")
         self._build_ui()
 
-        # Serial + camera (after UI is built so logging works)
-        self._initialize_serial_connection()
+        if splash: splash.set_status("Connecting to GRBL")
+        self._initialize_serial_connection(splash)
         self._redirect_stdout()
 
         self.log_text.append(
             "Application initialized. Toggle options and interact with controls.\n\n"
         )
 
+        if splash: splash.set_status("Starting camera")
         self.camera_thread = CameraWorker()
         self.camera_thread.frame_ready.connect(self._update_camera_view)
         self.camera_thread.start()
@@ -273,22 +337,22 @@ class ModernMainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        self.clear_button   = QPushButton("Clear Output")
-        self.example_button = QPushButton("Run Example")
-        self.input_button   = QPushButton("Get Input")
-        self.center_button  = QPushButton("Go to Center")
-        self.home_button    = QPushButton("Home CNC")
-        self.picture_button = QPushButton("Take Pic")
+        self.clear_button    = QPushButton("Clear Output")
+        self.get_pos_button  = QPushButton("? Position")
+        self.input_button    = QPushButton("Get Input")
+        self.center_button   = QPushButton("Go to Center")
+        self.home_button     = QPushButton("Home CNC")
+        self.picture_button  = QPushButton("Take Pic")
 
         self.clear_button.clicked.connect(self._clear_output)
-        self.example_button.clicked.connect(self._run_example)
+        self.get_pos_button.clicked.connect(self._get_position)
         self.input_button.clicked.connect(self._get_user_input)
         self.center_button.clicked.connect(self._move_center)
         self.home_button.clicked.connect(self._safe_home)
         self.picture_button.clicked.connect(self._take_pic)
 
         for btn in (
-            self.clear_button, self.example_button, self.input_button,
+            self.clear_button, self.get_pos_button, self.input_button,
             self.center_button, self.home_button, self.picture_button,
         ):
             layout.addWidget(btn)
@@ -402,21 +466,20 @@ class ModernMainWindow(QMainWindow):
     # Initialisation helpers
     # ======================================================================
 
-    def _initialize_serial_connection(self):
+    def _initialize_serial_connection(self, splash=None):
         try:
             self.print_with_timestamp("Connecting to GRBL...")
             self.cnc = CNCController(SERIAL_PORT, BAUD_RATE)
-            self.print_with_timestamp("Serial connection established.")
-
             self.cnc.ser.write(b"\r\n\r\n")
             time.sleep(2)
             self.cnc.ser.flushInput()
-
-            self.print_with_timestamp("GRBL ready.")
-            self.print_with_timestamp("Unlocking GRBL...")
             self.cnc.send_command("$X\n")
-            self.print_with_timestamp("Homing skipped (uncomment to enable).")
+            self.print_with_timestamp("GRBL connected and ready.")
 
+            if splash: splash.set_status("Homing CNC")
+            self.print_with_timestamp("Homing...")
+            self.cnc.home_grbl()
+            self.print_with_timestamp("Homing complete.")
         except Exception as e:
             traceback.print_exc()
             self.print_with_timestamp(f"Failed to connect: {e}")
@@ -496,7 +559,7 @@ class ModernMainWindow(QMainWindow):
                 self.gain_input.setEnabled(False)
                 self.exposure_label.setText("Exposure\nAuto")
                 self.gain_label.setText("Analog Gain (Auto)")
-                self.print_with_timestamp("Auto Exposure + Gain Enabled")
+                dlog("Auto Exposure + Gain Enabled")
             else:
                 self.exposure_input.setEnabled(True)
                 self.gain_input.setEnabled(True)
@@ -526,10 +589,10 @@ class ModernMainWindow(QMainWindow):
 
                 self.exposure_slider.setEnabled(True)
                 self.gain_slider.setEnabled(True)
-                self.print_with_timestamp("Manual Exposure + Gain Enabled")
+                dlog("Manual Exposure + Gain Enabled")
 
         except Exception as e:
-            self.print_with_timestamp(f"Exposure toggle error: {e}")
+            dlog(f"Exposure toggle error: {e}")
 
     def _update_exposure(self, index: int):
         if self.exposure_toggle.isChecked():
@@ -542,7 +605,7 @@ class ModernMainWindow(QMainWindow):
             self.camera_thread.picam2.set_controls({"ExposureTime": exposure_us})
             self.exposure_label.setText(f"Exposure\n{self._format_exposure(exposure_us)}")
         except Exception as e:
-            self.print_with_timestamp(f"Exposure error: {e}")
+            dlog(f"Exposure error: {e}")
         finally:
             self.exposure_slider.blockSignals(False)
             self.exposure_input.blockSignals(False)
@@ -576,7 +639,7 @@ class ModernMainWindow(QMainWindow):
             self.exposure_input.setStyleSheet(self.faint_style)
 
         except Exception:
-            self.print_with_timestamp(f"Invalid exposure input: {text}")
+            dlog(f"Invalid exposure input: {text}")
 
     def _exposure_focus_in(self, event):
         if self.exposure_input.text() == "Enter exposure":
@@ -608,7 +671,7 @@ class ModernMainWindow(QMainWindow):
             self.camera_thread.picam2.set_controls({"AnalogueGain": db_value})
             self.gain_label.setText(f"Gain: {db_value} dB")
         except Exception as e:
-            self.print_with_timestamp(f"Gain error: {e}")
+            dlog(f"Gain error: {e}")
         finally:
             self.gain_slider.blockSignals(False)
             self.gain_input.blockSignals(False)
@@ -627,7 +690,7 @@ class ModernMainWindow(QMainWindow):
             self.gain_input.setText("Enter gain")
             self.gain_input.setStyleSheet(self.faint_style)
         except Exception:
-            self.print_with_timestamp(f"Invalid gain input: {text}")
+            dlog(f"Invalid gain input: {text}")
 
     def _gain_focus_in(self, event):
         if self.gain_input.text() == "Enter gain":
@@ -667,7 +730,7 @@ class ModernMainWindow(QMainWindow):
                 self.gain_label.setText(f"Gain: {db_val} dB")
 
         except Exception as e:
-            self.print_with_timestamp(f"Auto update error: {e}")
+            dlog(f"Auto update error: {e}")
 
     # ======================================================================
     # CNC motion
@@ -792,10 +855,10 @@ class ModernMainWindow(QMainWindow):
         self.option1_enabled = on
         if on:
             GPIO.output(LED_PIN, GPIO.HIGH)
-            self.print_with_timestamp("LED turned on")
+            dlog("LED turned on")
         else:
             GPIO.output(LED_PIN, GPIO.LOW)
-            self.print_with_timestamp("LED turned off")
+            dlog("LED turned off")
 
     # ======================================================================
     # Log / output helpers
@@ -812,7 +875,7 @@ class ModernMainWindow(QMainWindow):
 
     def _clear_output(self):
         self.log_text.clear()
-        self.print_with_timestamp("Output cleared")
+        dlog("Output cleared")
 
     # ======================================================================
     # Button actions
@@ -821,7 +884,7 @@ class ModernMainWindow(QMainWindow):
     def _get_user_input(self):
         text, ok = QInputDialog.getText(self, "Send Command to GRBL", "Enter GRBL command:")
         if not (ok and text):
-            self.print_with_timestamp("No command entered")
+            dlog("No command entered")
             return
 
         command = text.strip()
@@ -837,18 +900,72 @@ class ModernMainWindow(QMainWindow):
         except Exception as e:
             self.print_with_timestamp(f"Error: {e}")
 
-    def _run_example(self):
-        self.print_with_timestamp("Starting example with delay...")
-        self._delay_counter = 0
-        self._delay_sequence()
+    def _get_position(self):
+        if self.cnc is None:
+            self.print_with_timestamp("CNC not connected")
+            return
+        try:
+            pos = self.cnc.get_current_position()
+            if pos:
+                self.print_with_timestamp(
+                    f"Position — X: {pos['x_pos']}  Y: {pos['y_pos']}  Z: {pos['z_pos']}"
+                )
+            else:
+                self.print_with_timestamp("Could not read position (ALARM?)")
+        except Exception as e:
+            self.print_with_timestamp(f"Position error: {e}")
 
-    def _delay_sequence(self):
-        if self._delay_counter < 5:
-            self.print_with_timestamp(f"Processing step {self._delay_counter + 1}...")
-            self._delay_counter += 1
-            QTimer.singleShot(1000, self._delay_sequence)
+    def eventFilter(self, obj, event):
+        """Intercept key presses app-wide and route jog keys here directly,
+        unless the focused widget is a text input (QLineEdit or QTextEdit)."""
+        if event.type() == QEvent.Type.KeyPress:
+            focused = QApplication.focusWidget()
+            # Let text inputs handle their own keys normally
+            if isinstance(focused, (QLineEdit, QTextEdit)):
+                return super().eventFilter(obj, event)
+
+            key = event.key()
+            Key = Qt.Key
+            jog_keys = {
+                Key.Key_Left, Key.Key_Right,
+                Key.Key_Up, Key.Key_Down,
+                Key.Key_Return, Key.Key_Enter,
+                Key.Key_Shift,
+            }
+            if key in jog_keys:
+                self.keyPressEvent(event)
+                return True   # consume the event — don't pass to child widget
+
+        return super().eventFilter(obj, event)
+
+    def keyPressEvent(self, event):
+        """Keyboard jog controls:
+            ←/→       — X axis
+            ↑/↓       — Y axis
+            Enter     — Z up
+            Shift     — Z down
+        """
+        if self.robot_busy or self.in_alarm or self.cnc is None:
+            return
+
+        key = event.key()
+        Key = Qt.Key
+
+        key_map = {
+            Key.Key_Left:   ("X",  1),
+            Key.Key_Right:  ("X", -1),
+            Key.Key_Up:     ("Y", -1),
+            Key.Key_Down:   ("Y",  1),
+            Key.Key_Return: ("Z",  1),
+            Key.Key_Enter:  ("Z",  1),
+            Key.Key_Shift:  ("Z", -1),
+        }
+
+        if key in key_map:
+            axis, direction = key_map[key]
+            self._jog(axis, direction)
         else:
-            self.print_with_timestamp("Example completed!")
+            super().keyPressEvent(event)
 
     # ======================================================================
     # Window close
